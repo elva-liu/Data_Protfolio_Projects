@@ -1,0 +1,747 @@
+---
+title: "Generalized Linear Mixed Models"
+format: 
+  pdf:
+    code-line-numbers: true
+---
+
+```{r}
+#| message: false
+#| warning: false
+#| echo: false
+# load libraries
+library(tidyverse)
+library(dotwhisker)
+library(effects)
+library(car)
+library(splines)
+library(performance)
+library(DHARMa)
+library(ggplot2)
+library(gridExtra)
+library(lme4)
+library(glmmTMB)
+library(HSAUR3)
+library(GLMMadaptive)
+library(MASS)
+library(broom.mixed)
+library(dplyr)
+library(brms)
+
+```
+
+## Study 1:
+
+## a.
+
+For this analysis, I have chosen 'total_medals' as the response variable. The fixed-effect predictor variables are log(gdp), log(pop), and year_centered (which is derived by subtracting the minimum year from each year to center the data around zero). The random effects include both random intercepts and slopes for team, and I will also account for random intercepts and slopes across year_centered. The maximal model specification would look like this:\
+
+```         
+full_model <- lmer(total_medals ~ log(gdp) + log(pop) + year_centered + 
+                   (1 + log(gdp) + log(pop) + year_centered | team) + 
+                   (1 + log(gdp) + log(pop) | year_centered), 
+                   data = olympic_trans)
+```
+
+## b.
+
+In our dataset, there is only one observation per country-year combination, which means we do not have sufficient data to support the inclusion of random effects for both team and year_centered within each group.
+
+The response variable total_medals has a highly right_skewed distribution, with most of the data concentrated around lower medal counts and a long tail extending towards higher counts. Poisson distribution is more appropriate for modeling this data. I will use glmmTMB function instead lmer to built the model.
+
+```{r}
+#| message: false
+
+
+# url to olympic dataset 
+url <- "https://raw.githubusercontent.com/bbolker/stats720/main/data/olymp1.csv"
+
+# Import the dataset
+olympic_data <- read_csv(url)
+
+```
+
+```{r}
+summary(olympic_data)
+```
+
+```{r}
+missing_values <- sapply(olympic_data, function(x) sum(is.na(x)))
+missing_values
+```
+
+```{r}
+# remove all missing values
+olympic_clean <- na.omit(olympic_data)
+sapply(olympic_clean,function(x) sum(is.na(x)))
+```
+
+```{r}
+hist (olympic_clean$n, main='Histogram of Medal Counts', xlab = 'Number of Medals', col = 'skyblue', breaks = 30)
+
+boxplot(olympic_clean$n, main='Box Plot of Medal Counts', ylab='Number of Medals')
+
+```
+
+```{r}
+# choose the total number of variable 
+# transform the column 'n' and 'medal' to 'Gold'/'Silver'/'Bronze'
+olympic_trans <- olympic_clean %>%
+  pivot_wider(names_from = medal, values_from = n, values_fill = list(n = 0)) %>%
+  group_by(team, year, gdp, pop) %>%
+  summarize(
+    gold = sum(Gold, na.rm = TRUE),
+    silver = sum(Silver, na.rm = TRUE),
+    bronze = sum(Bronze, na.rm = TRUE)
+  )
+```
+
+```{r}
+
+olympic_trans$total_medals = olympic_trans$gold+olympic_trans$silver+olympic_trans$bronze
+olympic_trans$year_centered = olympic_trans$year - min(olympic_trans$year) 
+olympic_trans=olympic_trans[,!(names(olympic_trans) %in% c('gold','silver','bronze'))]
+head(olympic_trans)
+```
+
+```{r}
+full_model <- glmer(total_medals ~ 1 + log(gdp) + log(pop) + year_centered + 
+                        (1 + log(gdp) + log(pop) + year_centered | team) + 
+                        (1 + log(gdp) + log(pop) | year_centered), 
+                      family = poisson, 
+                      data = olympic_trans)
+```
+
+## c.
+
+I initially started with the full model, but it encountered convergence issues. First, I removed the random effect term for `year`. Second, I simplified the random slope structure. I ultimately arrived at the `model_slop` model, using the `glmmTMB` function with a negative binomial link function to handle overdispersion. These adjustments resolved the convergence problem.
+
+```{r}
+model_slop <- glmmTMB(total_medals ~ 1 + log(gdp) + log(pop) + year_centered + 
+                        (1 +  year_centered | team),
+                      family = poisson, 
+                      data = olympic_trans)
+```
+
+```{r}
+check_overdispersion(model_slop)
+
+```
+
+```{r}
+model_slop_NB <- glmmTMB(
+  total_medals ~ 1 + log(gdp) + log(pop) + year_centered + 
+    (1 +  year_centered | team),
+  family = nbinom2(link = "log"), 
+  data = olympic_trans)
+```
+
+```{r}
+check_overdispersion(model_slop_NB)
+
+```
+
+## d. exploratory plots
+
+```{r}
+
+# Plot with geom_line for individual groups
+ggplot(olympic_trans, aes(x = year_centered, y = total_medals, group = team, color = team)) +
+  geom_line(alpha = 0.6) +
+  labs(
+    title = "Total Medals Over Time by Team",
+    x = "Year (Centered)",
+    y = "Total Medals"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")  # Remove legend if there are many groups
+```
+
+```{r}
+# Total_medals vs Population group by team
+ggplot(olympic_trans, aes(x = pop, y = total_medals, group = team)) +
+  geom_path(aes(color = year), alpha = 0.5) +
+  geom_point(aes(color = year), size = 2) +
+  scale_color_viridis_c() +
+  labs(x = "Population", y = "Total Medals") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+```{r}
+# Total_medals vs GDP group by team
+ggplot(olympic_trans, aes(x = gdp, y = total_medals, group = team)) +
+  geom_path(aes(color = year), alpha = 0.5) +
+  geom_point(aes(color = year), size = 2) +
+  scale_color_viridis_c() +
+  labs(x = "GDP", y = "Total Medals") +
+  theme_minimal() +
+  theme(legend.position = "right")
+```
+
+## e. fitting models
+
+I built four models by successively incorporating splines, zero-inflation, rank reduction, and interaction terms. I then compared these models using diagnostic plots and AIC values. Despite adding interaction terms and splines, all the models continue to show significant dispersion and structural patterns in their residuals. However, when I use `check_overdispersion()` on these models, it indicates that there is no overdispersion. I’m unsure why the diagnostic plots suggest overdispersion even though `check_overdispersion()` does not detect it.
+
+```{r}
+# adding spline 
+model_slop_NB_adjusted_1 <- glmmTMB(
+  total_medals ~ 1 + log(gdp) + log(pop) + ns(year_centered, df=4) + 
+    (1 | team),
+  family = nbinom2(link = "log"),
+  REML = TRUE,
+  data = olympic_trans)
+
+```
+
+```{r}
+# add zero-inflation
+model_slop_NB_adjusted_2 <- glmmTMB(
+  total_medals ~ 1 + log(gdp) + log(pop) + ns(year_centered, df=4) + 
+    (1 | team),
+  family = nbinom2(link = "log"),
+  ziformula = ~1,
+  REML = TRUE,
+  data = olympic_trans)
+```
+
+```{r}
+# add diag
+model_slop_NB_adjusted_3 <- glmmTMB(
+  total_medals ~ 1 + log(gdp) + log(pop) + ns(year_centered, df=4) + 
+    diag(year_centered|team),
+  family = nbinom2(link = "log"),
+  ziformula = ~1,
+  REML = TRUE,
+  data = olympic_trans)
+```
+
+```{r}
+# add intercection 
+model_slop_NB_adjusted_4 <- glmmTMB(
+  total_medals ~ 1 + log(gdp) + log(pop) + ns(year_centered, df=4) + log(gdp)*log(pop) + 
+    diag(year_centered|team),
+  family = nbinom2(link = "log"),
+  ziformula = ~1,
+  REML = TRUE,
+  data = olympic_trans)
+```
+
+```{r}
+all_fits <- ls(pattern = "^model_slop_NB_adjusted_")
+all_fit_list <- mget(all_fits)
+bbmle::AICtab(all_fit_list)
+```
+
+```{r}
+dharma_res_1 <- simulateResiduals(fittedModel = model_slop_NB_adjusted_1)
+dharma_res_2 <- simulateResiduals(fittedModel = model_slop_NB_adjusted_2)
+dharma_res_3 <- simulateResiduals(fittedModel = model_slop_NB_adjusted_3)
+dharma_res_4 <- simulateResiduals(fittedModel = model_slop_NB_adjusted_4)
+
+# Set up a multi-plot layout (3 rows, 1 column)
+par(mfrow = c(4, 1))
+
+# Plot residual diagnostics for each model
+plot(dharma_res_1, main = "Model_1")
+plot(dharma_res_2, main = "Model_2")
+plot(dharma_res_3, main = "model_3")
+plot(dharma_res_4, main = "model_4")
+
+
+```
+
+```{r}
+dwplot(list(model_slop_NB_adjusted_4, model_slop_NB_adjusted_3)) %>%
+  relabel_predictors(c(
+    "log(gdp)" = "Log(GDP)",
+    "log(pop)" = "Log(Population)",
+    "ns(year_centered, df = 4)" = "Year (Spline)"
+  )) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Coefficient Plot with Custom Labels",
+    x = "Estimate",
+    y = "Predictors"
+  ) +
+  theme_minimal()
+
+```
+
+## Study 2:
+
+## a.
+
+The response variable is `outcome`. The fixed-effect predictor variables are `time` and `visit`, while the random-effect grouping variables are `treatment` and `patientID`.
+
+## c.
+
+The model I am going to try to fit initially would be:
+
+full_model_toenail \<- glmer(outcome_binary \~ time + vist + (1 \| patientID) + (1 \| treatment), data = toenail, family = binomial(link = "logit")
+
+\
+In this model:
+
+-   The **fixed effects** estimate the impact of `time` and `visit` (on a logarithmic scale) on the binary outcome variable (`outcome_binary`).
+
+-   The **random effects** account for variability across patients (`patientID`) and treatments (`treatment`).
+
+```{r}
+
+data("toenail", package = "HSAUR3")
+head(toenail)
+```
+
+```{r}
+
+# explore the data
+summary(toenail)
+colSums(is.na(toenail))
+toenail$outcome_binary <- as.numeric(toenail$outcome == "moderate or severe")
+str(toenail)
+
+```
+
+## d.
+
+```{r}
+# Spaghetti plot for patientID
+ggplot(toenail, aes(x = time, y = visit, group = patientID, color = as.factor(patientID))) +
+  geom_line(alpha = 0.6) +
+  labs(
+    title = "Spaghetti Plot: Time Across Visits by Patient",
+    x = "Time",
+    y = "Visit Number",
+    color = "Patient ID"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")  # Hide legend if there are many patients
+
+```
+
+```{r}
+# Generalized linear model (quasipoisson family for count data)
+ggplot(toenail, aes(x = visit, y = time, color = treatment)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "glm", method.args = list(family = "quasipoisson"), se = FALSE) +
+  labs(
+    title = "GLM Fit: Quasipoisson Regression for Time",
+    x = "Visit Number",
+    y = "Time",
+    color = "Treatment"
+  ) +
+  theme_minimal()
+
+```
+
+## e.
+
+My initial model exhibited a singular fit. To find a better-fitting alternative, I explored three different models by simplifying the random effects structure, adding an interaction term, and incorporating spline functions.
+
+```{r}
+full_model_toenail <- glmer(
+  outcome_binary ~ time + visit + 
+    (1 | patientID) + (1 | treatment), 
+  data = toenail,
+  family = binomial(link = "logit"))
+
+
+```
+
+```{r}
+model_toenail_adjuseted_1 <- glmer(
+  outcome_binary ~ time + visit + 
+    (1 | patientID), 
+  data = toenail,
+  family = binomial(link = "logit"))
+```
+
+```{r}
+model_toenail_adjuseted_2 <- glmer(
+  outcome_binary ~ time * visit + 
+    (1 | patientID), 
+  data = toenail,
+  family = binomial(link = "logit"))
+```
+
+```{r}
+model_toenail_adjuseted_3 <- glmer(
+  outcome_binary ~ ns(time, 3) + ns(visit, 3) + 
+    (1 | patientID), 
+  data = toenail,
+  family = binomial(link = "logit"))
+```
+
+```{r}
+all_fits <- ls(pattern = "^model_toenail_adjuseted_")
+all_fit_list <- mget(all_fits)
+bbmle::AICtab(all_fit_list)
+```
+
+```{r}
+dharma_res_1 <- simulateResiduals(fittedModel = model_toenail_adjuseted_1)
+dharma_res_2 <- simulateResiduals(fittedModel = model_toenail_adjuseted_2)
+dharma_res_3 <- simulateResiduals(fittedModel = model_toenail_adjuseted_3)
+
+
+# Set up a multi-plot layout (3 rows, 1 column)
+par(mfrow = c(3, 1))
+
+# Plot residual diagnostics for each model
+plot(dharma_res_1, main = "Model_1")
+plot(dharma_res_2, main = "Model_2")
+plot(dharma_res_3, main = "model_3")
+
+```
+
+```{r}
+dwplot(model_toenail_adjuseted_2) %>%
+  relabel_predictors(c(
+    "time * visit" = "time * visit"
+  )) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Coefficient Plot ",
+    x = "Estimate",
+    y = "Predictors"
+  ) +
+  theme_minimal()
+
+```
+
+## f.
+
+```{r}
+# a.completely pooled analysis(GLM)
+model_glm <- glm(
+  outcome_binary ~ time * visit,
+  data = toenail,
+  family = binomial(link = "logit")
+)
+```
+
+```{r}
+# b.penalized Quasi-Likelihood (PQL)
+model_pql <- glmmPQL(
+  fixed = outcome_binary ~ time * visit,
+  random = ~ 1 | patientID,
+  family = binomial(link = "logit"),
+  data = toenail
+)
+```
+
+```{r}
+# c. Laplace Approximation
+model_laplace <- glmer(
+  outcome_binary ~ time * visit + (1 | patientID),
+  data = toenail,
+  family = binomial(link = "logit")
+)
+```
+
+```{r}
+# d. Adaptive Gauss-Hermite Quadrature (10 and 20 Points)
+# With 10 quadrature points
+model_agq10 <- glmer(
+  outcome_binary ~ time * visit + (1 | patientID),
+  data = toenail,
+  family = binomial(link = "logit"),
+  nAGQ = 10
+)
+
+# With 20 quadrature points
+model_agq20 <- glmer(
+  outcome_binary ~ time * visit + (1 | patientID),
+  data = toenail,
+  family = binomial(link = "logit"),
+  nAGQ = 20
+)
+```
+
+```{r}
+
+# e. Fit a Bayesian model with default priors
+model_bayesian <- brm(
+  outcome_binary ~ time * visit + (1 | patientID),
+  data = toenail,
+  family = bernoulli(link = "logit"),
+  prior = c(
+    prior(normal(0, 10), class = "b"),        # Weakly informative priors
+    prior(normal(0, 10), class = "Intercept"),
+    prior(exponential(1), class = "sd")       # Prior for random effect sd
+  ),
+  iter = 2000, chains = 4
+)
+
+```
+
+The comparison coefficien plot shows that all the models have similar estimates for time, visit and time:visit.
+
+The Bayesian model produces a significantly different estimate for the intercept parameter compared to other models.
+
+```{r}
+#| waning: false 
+# coefficients for GLM
+glm_results <- tidy(model_glm, conf.int = TRUE) %>%
+  mutate(model = "GLM (Pooled)")
+
+# coefficients for PQL
+pql_results <- tidy(model_pql, conf.int = TRUE) %>%
+  mutate(model = "PQL")
+
+# coefficients for Laplace
+laplace_results <- tidy(model_laplace, conf.int = TRUE) %>%
+  mutate(model = "Laplace")
+
+# coefficients for AGQ (10 points)
+agq10_results <- tidy(model_agq10, conf.int = TRUE) %>%
+  mutate(model = "AGQ (10 points)")
+
+# coefficients for AGQ (20 points)
+agq20_results <- tidy(model_agq20, conf.int = TRUE) %>%
+  mutate(model = "AGQ (20 points)")
+
+# coefficients for Bayesian model
+bayesian_results <- as.data.frame(fixef(model_bayesian, summary = TRUE)) %>%
+  rownames_to_column("term") %>%
+  rename(estimate = Estimate, conf.low = `Q2.5`, conf.high = `Q97.5`) %>%
+  mutate(model = "Bayesian")
+
+```
+
+```{r}
+# Combine all results into one data frame
+combined_results <- bind_rows(
+  glm_results,
+  pql_results,
+  laplace_results,
+  agq10_results,
+  agq20_results,
+  bayesian_results
+)
+
+```
+
+```{r}
+# Create the coefficient comparison plot
+dwplot(combined_results, by_2sd = FALSE, dot_args = list(size = 2), whisker_args = list(size = 1)) +
+  theme_minimal() +
+  labs(
+    title = "Comparison of Fixed-Effect Estimates Across Models",
+    x = "Estimate",
+    y = "Fixed-Effect Parameters",
+    color = "Model"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "top"
+  )
+
+```
+
+## Study 3:
+
+## a.
+
+```{r}
+simfun <- function(beta, theta, n_t, n_id) {
+    id <- rep(1:n_id, each = n_t)
+    time <- rep(0:(n_t-1), times = n_id)
+    ttt <- rep(rep(c(0,1), each = n_t), length.out = n_id * n_t)
+    
+    X <- model.matrix(~ 1 + ttt*time)
+    
+    random_effects <- rnorm(n_id, 0, theta)
+    re <- rep(random_effects, each = n_t)
+    
+    eta <- X %*% beta + re
+    
+    p <- 1/(1 + exp(-eta))
+    y <- rbinom(length(p), 1, p)
+    
+    data.frame(
+        id = factor(id),
+        time = time,
+        ttt = factor(ttt, labels = c("control", "treatment")),
+        y = y
+    )
+}
+
+
+set.seed(123)  
+beta_test <- c(1, -0.5, -0.1, 0.05)  
+theta_test <- 0.5
+n_t_test <- 7    
+n_id_test <- 10  
+
+test_data <- simfun(beta_test, theta_test, n_t_test, n_id_test)
+
+print(head(test_data))
+
+test_model <- glmer(y ~ ttt*time + (1|id), 
+                    family = binomial, 
+                    data = test_data)
+print(summary(test_model))
+```
+
+```{r}
+fitfun <- function(data, nAGQ) {
+    extract_coef_ci <- function(model, type = "standard") {
+        if (type == "standard") {
+            coef_table <- summary(model)$coefficients
+            if (inherits(model, "glm")) {
+                ci <- confint(model)
+            } else {
+                est <- coef_table[, "Estimate"]
+                se <- coef_table[, "Std. Error"]
+                ci <- cbind(
+                    est - 1.96 * se,
+                    est + 1.96 * se
+                )
+            }
+            result <- data.frame(
+                estimate = coef_table[, "Estimate"],
+                se = coef_table[, "Std. Error"],
+                ci_lower = ci[, 1],
+                ci_upper = ci[, 2]
+            )
+        } else if (type == "pql") {
+            coef_table <- summary(model)$tTable
+            est <- coef_table[, "Value"]
+            se <- coef_table[, "Std.Error"]
+            result <- data.frame(
+                estimate = est,
+                se = se,
+                ci_lower = est - 1.96 * se,
+                ci_upper = est + 1.96 * se
+            )
+        }
+        return(result)
+    }
+    
+    if (nAGQ == -2) {
+        fit <- glm(y ~ ttt * time, family = binomial, data = data)
+        results <- extract_coef_ci(fit)
+        
+    } else if (nAGQ == -1) {
+        fit <- glmmPQL(y ~ ttt * time, 
+                      random = ~ 1 | id,
+                      family = binomial, 
+                      data = data)
+        results <- extract_coef_ci(fit, type = "pql")
+        
+    } else if (nAGQ >= 1) {
+        fit <- glmer(y ~ ttt * time + (1 | id),
+                    family = binomial,
+                    data = data,
+                    nAGQ = nAGQ)
+        results <- extract_coef_ci(fit)
+    }
+    
+    return(results)
+}
+
+# test different nAGQ values
+test_results_glm <- fitfun(test_data, -2)
+test_results_pql <- fitfun(test_data, -1)
+test_results_laplace <- fitfun(test_data, 1)
+
+cat("GLM (pooled) results:\
+")
+print(test_results_glm)
+cat("\
+PQL results:\
+")
+print(test_results_pql)
+cat("\
+Laplace (nAGQ=1) results:\
+")
+print(test_results_laplace)
+```
+
+3\.
+
+```{r}
+simfun <- function(n_t, n_id, beta, theta) {
+  time <- rep(1:n_t, n_id)
+  id <- rep(1:n_id, each = n_t)
+  treatment <- rbinom(n_id, 1, 0.5) 
+  random_effect <- rnorm(n_id, 0, exp(theta))
+  response <- beta[1] + beta[2] * treatment + beta[3] * time +
+    beta[4] * treatment * time + random_effect[id] +
+    rnorm(n_t * n_id, 0, 0.5) 
+  data.frame(id, time, treatment, response)
+}
+```
+
+```{r}
+# Fitting function
+fitfun <- function(data) {
+  fit <- glmmTMB(
+    response ~ treatment * time + (1 | id),
+    data = data
+  )
+  broom.mixed::tidy(fit, effects = "fixed", conf.int = TRUE)
+}
+```
+
+```{r}
+# Simulation and evaluation
+evaluate <- function(n_t, beta, theta, n_id, n_sim = 100) {
+  results <- replicate(n_sim, {
+    sim_data <- simfun(n_t, n_id, beta, theta)
+    tryCatch(fitfun(sim_data), error = function(e) NULL)
+  }, simplify = FALSE)
+  
+  results <- bind_rows(results, .id = "simulation")
+  true_vals <- data.frame(term = c("(Intercept)", "treatment", "time", "treatment:time"), 
+                          true = beta)
+  results <- left_join(results, true_vals, by = "term")
+  results %>%
+    filter(term %in% c("treatment", "treatment:time")) %>%
+    group_by(term) %>%
+    summarize(
+      bias = mean(estimate - true, na.rm = TRUE),
+      variance = var(estimate, na.rm = TRUE),
+      scaled_rmse = sqrt(mean((estimate / true - 1)^2, na.rm = TRUE)),
+      coverage = mean(conf.low <= true & conf.high >= true, na.rm = TRUE)
+    )
+}
+```
+
+```{r}
+# Run simulations for n_t = 5 and n_t = 10
+set.seed(1234)
+beta <- c(-0.6, 0, -0.2, -0.05)
+theta <- log(0.2)
+n_id <- 300
+
+results_5 <- evaluate(n_t = 5, beta = beta, theta = theta, n_id = n_id)
+results_10 <- evaluate(n_t = 10, beta = beta, theta = theta, n_id = n_id)
+
+# Combine results
+results <- bind_rows(
+  results_5 %>% mutate(n_t = 5),
+  results_10 %>% mutate(n_t = 10)
+)
+```
+
+```{r}
+# Visualize results
+ggplot(results, aes(x = term, y = bias, fill = factor(n_t))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Bias for beta[2] and beta[4]", y = "Bias", fill = "Time Points")
+
+ggplot(results, aes(x = term, y = variance, fill = factor(n_t))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Variance for beta[2] and beta[4]", y = "Variance", fill = "Time Points")
+
+ggplot(results, aes(x = term, y = scaled_rmse, fill = factor(n_t))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Scaled RMSE for beta[2] and beta[4]", y = "Scaled RMSE", fill = "Time Points")
+
+ggplot(results, aes(x = term, y = coverage, fill = factor(n_t))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Coverage for beta[2] and beta[4]", y = "Coverage", fill = "Time Points")
+```

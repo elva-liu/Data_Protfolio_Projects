@@ -1,0 +1,388 @@
+---
+title: "Linear Model Practice"
+format: 
+  pdf:
+    code-line-numbers: true
+---
+
+\newpage
+
+```{r}
+## BMB: can suppress chaff by using message=FALSE option
+# load libraries
+library(tidyverse)
+library(dotwhisker)
+library(effects)
+library(car)
+library(splines)
+library(performance)
+library(DHARMa)
+library(ggplot2)
+library(gridExtra)
+
+```
+
+# Practice 1: **Olympic medals**
+
+## a.
+
+In this Olympic dataset, I’ve chosen to predict gold medals as the response variable. After pivoting the medal counts into separate columns for gold, silver, and bronze, the data set now has 7 variables and 1,165 observations. I've decided to include population and GDP as predictors. Based on Harrell's rule of thumb (15 events per variable), we have enough data to support the use of these four predictors. I assume that GDP and population will have a linear relationship with the number of gold medals. The reasoning is that countries with higher GDPs are likely to have more resources and talent to support athletes.
+
+```{r}
+# url to olympic dataset 
+url <- "https://raw.githubusercontent.com/bbolker/stats720/main/data/olymp1.csv"
+
+# Import the dataset
+olympic_data <- read_csv(url)
+
+
+# transform the column 'n' and 'medal' to 'Gold'/'Silver'/'Bronze'
+olympic_trans <- olympic_data %>%
+  pivot_wider(names_from = medal, values_from = n, values_fill = list(n = 0)) %>%
+  group_by(team, year, gdp, pop) %>%
+  summarize(
+    gold = sum(Gold, na.rm = TRUE),
+    silver = sum(Silver, na.rm = TRUE),
+    bronze = sum(Bronze, na.rm = TRUE)
+  )
+
+
+```
+
+## b.
+
+The unit of gold metal is a count number, the unit of GDP is Billion USD and the unit of population is Million people. I would consider as 1 billion change in GDP or 1 million change in population to have a minor impact in the number of gold metal.
+
+```{r}
+# check correlation between variables
+cor(olympic_trans[, c("gdp", "pop", "gold")], use = "complete.obs")
+```
+
+## c.
+
+Before building the model, I checked the distribution of all variables, including **GDP** and **population**. I noticed that both variables were heavily right-skewed, so to reduce the skewness, I decided to apply a **log transformation** to both predictor variables. After that, I fit the linear regression model, called **model_log**.
+
+```{r}
+# Set up a 2x2 plotting area
+par(mfrow = c(2, 2))  # 2 rows, 2 columns
+variables <- c("gdp","pop","gold")
+# Loop through each variable and create a plot
+for (i in variables) {
+  
+  hist(olympic_trans[[i]], main = paste(i, "Distribution"), 
+       xlab = i, col = "lightblue", border = "black")
+  
+}
+```
+
+After log transformation:
+
+```{r}
+#---------- apply log-transforming to (gdp/pop/gold)
+# log transformation to GDP
+olympic_trans$log_gdp <- log(olympic_trans$gdp + 1)  # Use log(1 + x) to handle zeros
+
+# log transformation to Population
+olympic_trans$log_pop <- log(olympic_trans$pop + 1)  
+
+# log transformation to Gold medals
+olympic_trans$log_gold <- log(olympic_trans$gold + 1) 
+
+
+# check the distributions after log transformation
+log_variables <- c("log_gdp", "log_pop", "log_gold")
+# Set up a 2x2 plotting area
+par(mfrow = c(2, 2))  # 2 rows, 2 columns
+
+# Loop through each variable and create a plot
+for (var in log_variables) {
+  
+  hist(olympic_trans[[var]], main = paste(var, "log Distribution"), 
+       xlab = var, col = "lightblue", border = "black")
+  
+}
+
+```
+
+\newpage
+
+## d.
+
+From the posterior predictive check, we observe some deviations around the center of the distribution, indicating that the model has not fully captured the underlying structure of the data. For linearity, we see clear patterns around the lower fitted values, suggesting non-linearity in the model. In the scale-location plot, there is a slight positive relationship between residuals and fitted values, violating the assumption of homoscedasticity in linear models. The Q-Q plot further illustrates that the residuals are not perfectly normally distributed.
+
+In conclusion, the model likely missing some aspects of the data due to signs of non-linearity and heteroscedasticity. Based on these observations, I have decided to apply splines to improve the model fit.
+
+```{r}
+
+# model_log: log transformation applyed for predictors and respons variable
+model_log <- lm(log_gold ~ log_gdp + log_pop, data = olympic_trans)
+summary(model_log)
+
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+check_model(model_log)
+```
+
+\newpage
+
+## e.
+
+After adjusting the model with natural splines with a degree of freedom of 5, we observe improvements in **linearity**, and the issue of **heteroscedasticity** has been slightly reduced. The **Q-Q plot** also shows that the residuals are closer to normality. However, some issues remain, indicating that the model may still not fully capture the relationship between the predictors and the response variable. Overall, the model_log_splines has better performance compare to model_log.
+
+```{r}
+# Build the model with a natural spline on GDP and population
+model_log_splines <- lm(log_gold ~ ns(log_gdp, df = 5) + ns(log_pop, df = 5), 
+                        data = olympic_trans)
+summary(model_log_splines)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+check_model(model_log_splines)
+```
+
+\newpage
+
+## f.
+
+From the coefficient plot, we can see that **log_gdp** has a stronger positive relationship with gold medals, especially at **ns(log_gdp, df=5)** and **ns(log_gdp, df=4)**. However, the varying coefficient estimates across the different splines for **log_gdp** indicate that the effect of **log_gdp** on gold medals is not constant, which implies a **non-linear** relationship between **log_gdp** and gold medals.
+
+```{r}
+# Generate coefficient plot for model_log_splines
+dwplot(model_log_splines) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "lightgreen") +
+  theme_minimal() +
+  labs(x = "Coefficient Estimate", y = "Predictor Variables")
+
+```
+
+## g.
+
+The effects plot for log_gdp indicates a non-linear, strong positive relationship between GDP and the number of gold medals won. This means that as GDP increases, the number of gold medals tends to grow significantly. However, the effect of log_pop presents a more complex scenario. Population has a minor positive effect on gold medals initially, but as population grows larger, the slope becomes negative. This suggests that log_pop is not a strong predictor on its own. (**BMB**: not sure why this suggests a weak predictor? The overall *range* of the plot suggests that the overall effects of `log_pop` are weaker than those of `log_gdp`, but the nonlinearity doesn't IMO indicate a problem ...) Additionally, the dataset does not seem to fit a linear model well, so we may need to consider other statistical models that can more accurately explain the data. (**BMB**: this *is* a linear model, in the technical sense! (Predicted value is a linear function of the predictor variables \[i.e. spline components\], if not of the input variables (`log_gdp` etc.)
+
+```{r}
+# all effects for the model
+effects_model <- allEffects(model_log_splines)
+
+plot(effects_model)
+
+```
+
+\newpage
+
+# Practice 2: Contrast
+
+In the first step, I defined the inverse contrast matrix based on the description provided in the question.
+
+```{r}
+# Define the sum-to-zero invers contrasts matrix
+contr_inverse_matrix <- matrix(c(
+  -1,1/3,1/3,1/3,# C vs Average of Treatments
+   0,  1, -1,  0, # I vs II
+   0,  0,  1, -1, # II vs III
+  1, 0, 0, 0      # Treat Control as Intercept
+), ncol = 4, byrow = TRUE)
+
+MASS::fractions(contr_inverse_matrix)
+```
+
+In the second step, I obtained the contrast matrix by inverting the inverse contrast matrix.
+
+```{r}
+contr_matrix= solve(contr_inverse_matrix)
+MASS::fractions(contr_matrix)
+```
+
+In the third step, I generated a sample dataset.
+
+```{r}
+data <- data.frame(
+  treatment = factor(c("C", "I", "II", "III")),
+  response = c(10, 12, 14, 16)
+)
+data
+```
+
+Finally, I applied the contrast matrix to the sample and obtained the results, which matched my expectations.
+
+The result shows that a coefficient of 10 represents the control, 4 represents the difference between the control and the overall average of all treatments, -2 represents the difference between treatment 1 and treatment 2, and another -2 represents the difference between treatment 2 and treatment 3.
+
+```{r}
+lm_model <- lm(response ~ treatment, contrasts = list(treatment = contr_matrix[,-4]) , data = data)
+coef(summary(lm_model))
+```
+
+\newpage
+
+# Practice 3: **simulations to evaluate the effects of model misspecification**
+
+The simulation number = 1000. This is a part of the result table as an example.
+
+```{r}
+set.seed(100)
+
+between <- function(a, b) {
+  return(b[1] < a & a < b[2])  
+}
+
+# define confint_coverage function
+confint_coverage <- function(model, true_slope, alpha = 0.05) {
+  
+  confidence_interval <- confint(model, level = 1 - alpha)[2, ]  # the slope
+  
+  return(between(true_slope, confidence_interval))
+}
+
+# define the sim_fun function shift to t-distribution
+sim_fun <- function(n = 100, slope = 1, sd = 1, intercept = 0, df = 1) {
+  x <- runif(n)  
+  y <- intercept + slope * x + sd * rt(n, df)  # shift to t-distribution
+  data.frame(x, y)  
+}
+
+# define df and n values for the simulations
+df_values <- seq(2, 50, by = 6)
+n_values <- c(10, 20, 100)
+
+# a emty data frame for results
+results <- data.frame()
+
+# the number of simulations 
+n_sim <- 1000
+
+# Loop over for each  (df & n)
+for (n in n_values) {
+  for (df in df_values) {
+      
+    # vectors for the results of each simulation
+    slope_estimates <- numeric(n_sim)
+    p_values <- numeric(n_sim)
+    coverage_results_sim <- numeric(n_sim)
+    
+    for (i in 1:n_sim) {
+      #sim data set
+      data <- sim_fun(n = n, slope = 1, sd = 1, intercept = 0, df = df)
+      
+      # Fit model
+      model <- lm(y ~ x, data = data)
+      
+      slope_estimates[i] <- coef(model)[2]
+      p_values[i] <- summary(model)$coefficients[2, 4]
+      coverage_results_sim[i] <- confint_coverage(model, true_slope = 1)
+    }
+
+    # calculate aggregate bias, RMSE, power, coverage
+    bias <- mean(slope_estimates - 1)
+    rmse <- sqrt(mean((slope_estimates - 1)^2))
+    power <- mean(p_values < 0.05)
+    coverage <- mean(coverage_results_sim)
+    
+    # Append the results to the results data frame
+    results <- rbind(results, data.frame(
+      n = n,
+      df = df,
+      bias = bias,
+      rmse = rmse,
+      power = power,
+      coverage = coverage
+    ))
+  }
+}
+
+results
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# Define the individual plots
+plot1 <- ggplot(results, aes(x = df, y = bias, color = factor(n))) +
+  geom_line() +
+  labs(title = "Bias vs df for Different Sample Sizes",
+       x = "Degrees of Freedom (df)",
+       y = "Bias",
+       color = "Sample Size (n)") +
+  theme_minimal()
+
+plot2 <- ggplot(results, aes(x = df, y = power, color = factor(n))) +
+  geom_line() +
+  labs(title = "Power vs df for Different Sample Sizes",
+       x = "Degrees of Freedom (df)",
+       y = "Power",
+       color = "Sample Size (n)") +
+  theme_minimal()
+
+plot3 <- ggplot(results, aes(x = df, y = coverage, color = factor(n))) +
+  geom_line() +
+  labs(title = "Coverage vs df for Different Sample Sizes",
+       x = "Degrees of Freedom (df)",
+       y = "Coverage",
+       color = "Sample Size (n)") +
+  theme_minimal()
+
+plot4 <- ggplot(results, aes(x = df, y = rmse, color = factor(n))) +
+  geom_line() +
+  labs(title = "RMSE vs df for Different df",
+       x = "Degrees of Freedom",
+       y = "RMSE",
+       color = "Sample Size (n)") +
+  theme_minimal()
+
+
+
+```
+
+\newpage
+
+Bias
+
+From the graph of Bias vs. Degrees of Freedom for Different Sample Sizes, we can observe that smaller sample sizes tend to have larger deviations from zero, whereas larger sample sizes stay relatively closer to zero. However, as the degrees of freedom increase, the bias for different sample sizes becomes more stable and remains close to zero.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 3
+#| dpi: 300
+plot(plot1)
+```
+
+Power
+
+The Power vs. Degrees of Freedom for Different Sample Sizes graph shows that larger sample sizes result in higher power. From this graph, we can see that larger sample sizes have significantly greater power compared to smaller ones. For example, a sample size of 100 achieves a power of 0.8 at higher degrees of freedom, meaning the model has an 80% chance of detecting a true effect if it exists.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 3
+#| dpi: 300
+plot(plot2)
+```
+
+\newpage
+
+coverage
+
+The three lines representing different sample sizes all show fluctuations in the graph. However, the larger sample size has relatively more stable fluctuations compared to the smaller sample sizes.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 3
+#| dpi: 300
+plot(plot3)
+```
+
+RMSE
+
+The RMSE tends to stabilize with higher degrees of freedom across different sample sizes. Larger sample sizes achieve the lowest RMSE, indicating that increasing sample size leads to more accurate predictions.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 3
+#| dpi: 300
+plot(plot4)
+```

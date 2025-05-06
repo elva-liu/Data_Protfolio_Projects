@@ -1,0 +1,697 @@
+---
+title: "GLM Practice"
+format: 
+  pdf:
+    code-line-numbers: true
+---
+
+\newpage
+
+```{r}
+# load library
+library(mlmRev)
+library(ggplot2)
+library(gridExtra)
+library(ggmosaic)
+library(dplyr)
+library(performance)
+library(DHARMa)
+library(splines)
+library(GGally)
+library(dotwhisker)
+library(ggeffects)
+library(bbmle)
+library(pscl)
+library(MASS)
+library(DHARMa)
+library(brglm2)
+library(arm)
+```
+
+## Question 1:
+
+## a.
+
+Based on the description of the *Contraception* dataset, I chose the variable `use` as the response variable, with `livch` and `age` as the predictor variables. As Harrell recommends at least 10-20 events per parameter, the dataset contains 759 events, which can support up to about 37 parameters (based on the 20-events-per-parameter rule). This means we have sufficient data to support the two predictors.
+
+My assumption for this analysis is that the choice of whether a woman uses contraception is highly influenced by her age and the number of children she has.
+
+```{r}
+data("Contraception", package = "mlmRev")
+summary(Contraception)
+use_num <- as.numeric(Contraception$use) - 1
+Contraception$use_num <- as.numeric(use_num)
+# the number of events where use == 1
+events <- sum(Contraception$use_num == 1)
+events
+```
+
+\newpage
+
+## b.
+
+From the distribution plots, I would say that the `age` distribution is slightly skewed to the right, suggesting most women in the dataset are younger than the mean age and there are some women who are much older than the mean age. The distribution of age has a reasonable range and shape, so I would use it directly in the model. The distribution of `livch` shows that most women in the dataset have either 0 children or 3+ children, which might impact contraception use differently between these two groups.
+
+I would like to understand the relationships between `age`, `livch`. From the boxplot, we can see a trend suggesting that older women tend to have more children which indicates `age` and `livch` are related. This indicates some patterns that might influence the use of contraception.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# pairwise plot between age and livch
+ggpairs(Contraception, columns = c("age", "livch"),
+        upper = list(continuous = "blank"),  
+        lower = list(continuous = "points"),
+        diag = list(continuous = "densityDiag"),
+        title = "Pairwise Plot of Predictors")
+
+
+```
+
+The following faced histograms shows the distribution of `age` across the different levels of `livch`. It also suggested that women without children are generally younger, while those with 3 or more children are older which indicates a potential interaction effect between `age` and `livch`.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# faceted histogram for age by number of living children
+ggplot(Contraception, aes(x = age)) +
+  geom_histogram(binwidth = 1, fill = "lightblue", color = "black") +
+  facet_wrap(~ livch) +
+  labs(title = "Distribution of Age Faceted by Number of Living Children", x = "Age (Centered)", y = "Count") +
+  theme_minimal()
+
+```
+
+\newpage
+
+## C.
+
+I have built two models: `glm_1`, which contains age and factor(livch) without considering any interaction, and `glm_2`, which adds an interaction between age and livch. The interaction allows the effect of age to change based on the number of living children, supporting my assumption that both age and the number of children jointly influence contraception use. I plotted a comparison graph for these two models, and from the graph, we can see that both models are similar for `livch=0` and `livch=2`, but for `livch=1` and `livch=3+`, model `glm_2` (with interaction) shows some interaction effects on the prediction trend. I decided to use model `glm_2`, as it aligns better with my assumption.
+
+```{r}
+# fitting the model
+# glm_1 without interaction
+glm_1 <- glm(use_num ~ age + factor(livch), family = binomial, data = Contraception)
+# glm_2 with interaction
+glm_2 <- glm(use_num ~ age + factor(livch) + age:factor(livch), family = binomial, data = Contraception)
+
+
+
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+#| warning: false
+
+# a grid of values for predictions
+prediction_data <- Contraception %>%
+  dplyr::select(age, livch) %>%
+  distinct() %>%
+  tidyr::expand(age, livch)
+
+# get predictions from both models
+prediction_data$pred_reduced <- predict(glm_1, newdata = prediction_data, type = "response")
+prediction_data$pred_full <- predict(glm_2, newdata = prediction_data, type = "response")
+
+ggplot(prediction_data, aes(x = age)) +
+  geom_point(data = Contraception, aes(x = age, y = use_num, group = factor(livch)), 
+             position = position_jitter(width = 1, height = 0.05), alpha = 0.4) +
+  geom_line(aes(y = pred_reduced, color = "glm_1 (without interaction)"), size = 1, linetype = "dashed") +
+  geom_line(aes(y = pred_full, color = "glm_2 (with interaction)"), size = 1) +
+  facet_wrap(~ livch) +
+  scale_color_manual(values = c("glm_1 (without interaction)" = "deepskyblue", "glm_2 (with interaction)" = "red")) +
+  labs(x = "Age", y = "Predicted Probability of Contraception Use", 
+       title = "Comparison of Models With and Without Interaction",
+       color = "Model") +
+  theme_minimal() +
+  ylim(0, 1)  # limit the y-axis to between 0 and 1
+
+```
+
+\newpage
+
+## d.
+
+The `model_check()` function provides a full set of diagnostic visualizations, including residual distribution, homoscedasticity, multicollinearity, and influential observations. However, DHARMa generates simulation-based residuals by simulating expected values from the fitted model, which makes it more suitable for GLMs and non-linear models, especially in our case, where the response variable is binary. That's why I prefer using the diagnostic graphs from DHARMa for this analysis.
+
+Comparing the diagnostic plots from base R and DHARMa, we noticed that the base R diagnostic plots indicate several issues, such as non-normality and heteroscedasticity. However, the DHARMa diagnostic plots show the residuals closely following the diagonal line, with no significant signs of problems, suggesting that the model fits the data well. The difference arises because standard residuals are not suitable for a GLM with a binary response variable, while DHARMa's simulation-based residuals account for the varying distribution of the response variable, making them more appropriate for diagnosing GLM models.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# base R diagnostic plots
+par(mfrow = c(2, 2))
+plot(glm_2)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+sim_residuals <- simulateResiduals(fittedModel = glm_2)
+plot(sim_residuals)
+```
+
+Although the DHARMa plots suggest the model fits well, I also used the `check_model()` function for further diagnostics. In the binned residual plot, many red bins fall outside the error bounds, particularly in the lower probability range. To improve the model, I applied a natural spline with 5 degrees of freedom to the predictor `age` to account for non-linearity between the predictor and the response variable. The updated model, `glm_2_spline`, shows a better fit compared to `glm_2`, but it also exhibits higher collinearity. Following Vanhove's (2021) recommendation in "Collinearity Isn’t a Disease That Needs Curing," I chose not to address this collinearity issue.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# build a model with nutral spline with degree freedom of 5
+glm_2_spline <- glm(use_num ~ ns(age, df = 5) + factor(livch) + age:factor(livch), family = binomial, data = Contraception)
+
+# plot the diagnositic graph from DHARMa
+sim_residuals_spline <- simulateResiduals(fittedModel = glm_2_spline)
+plot(sim_residuals_spline)
+
+```
+
+\newpage
+
+## e.
+
+The coefficient plot indicated that there are uncertainties in the estimated effects for `age`, but there is a significant estimated effect for the variable `livch`.
+
+In the effect plot, trends show that the probability of contraception use increases with age up to a certain point, then decreases across all levels of `livch`. This indicates that `age` has a non-linear effect on the response variable `use`. The number of children also influences contraception use, women who have children have a higher probability of using contraception compared to those without children.
+
+In conclusion, both graphs support my initial assumption that the choice of whether a woman uses contraception is influenced by both age and the number of children. However, they also reveal the complexity of the non-linear relationship with `age`.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+#| warning: false
+#| message: false
+
+# coefficient plot
+dwplot(glm_2_spline) +
+  theme_minimal() +
+  labs(title = "Coefficient Plot for Model glm_2_spline",
+       x = "Coefficient Estimate",
+       y = "Predictors") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red")
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# generate effect data 
+effect_data <- ggpredict(glm_2_spline, terms = c("age [all]", "livch"))
+# plot the marginal effects
+ggplot(effect_data, aes(x = x, y = predicted, color = group)) +
+  geom_line(size = 1) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = group), alpha = 0.2) +
+  labs(title = "Effect of Age and Number of Children (livch) on Contraception Use",
+       x = "Age (Centered)",
+       y = "Predicted Probability of Contraception Use",
+       color = "Number of Children",
+       fill = "Number of Children") +
+  theme_minimal()
+```
+
+\newpage
+
+## Question 2:
+
+## a.
+
+I plotted the distribution of all variables to gain a general understanding of the dataset. Additionally, I plotted the `Area`, `density` and `prev` variables for different sites across all three years. I noticed that the `Area` and `density` remained identical across the three years, while `prev` showed some changes each year.
+
+```{r}
+g_url <- "https://raw.githubusercontent.com/bbolker/mm_workshops/master/data/gopherdat2.csv"
+g_data <- read.csv(g_url)
+summary(g_data)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# plot distributions for all variables in one figure
+p1 <- ggplot(g_data, aes(x = shells)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  labs(title = "Distribution of Shells", x = "Shells", y = "Frequency") +
+  theme_minimal()
+
+p2 <- ggplot(g_data, aes(x = year)) +
+  geom_histogram(binwidth = 1, fill = "lightgreen", color = "black") +
+  labs(title = "Distribution of Year", x = "Year", y = "Frequency") +
+  theme_minimal()
+
+p3 <- ggplot(g_data, aes(x = Area)) +
+  geom_histogram(binwidth = 5, fill = "lightcoral", color = "black") +
+  labs(title = "Distribution of Area", x = "Area", y = "Frequency") +
+  theme_minimal()
+
+p4 <- ggplot(g_data, aes(x = density)) +
+  geom_histogram(binwidth = 1, fill = "orange", color = "black") +
+  labs(title = "Distribution of Density", x = "Density", y = "Frequency") +
+  theme_minimal()
+
+p5 <- ggplot(g_data, aes(x = prev)) +
+  geom_histogram(binwidth = 5, fill = "purple", color = "black") +
+  labs(title = "Distribution of Prev", x = "Prev", y = "Frequency") +
+  theme_minimal()
+
+# Arrange all plots in one figure
+grid.arrange(p1, p2, p3, p4, p5, ncol = 2)
+```
+
+```{r}
+str(g_data)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# Plot Area for different sites separately for different years
+ggplot(g_data, aes(x = factor(year), y = Area, fill = Site)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Area for Different Sites by Year", x = "Year", y = "Area") +
+  theme_minimal()
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# plot prev for different sites separately for different years
+ggplot(g_data, aes(x = factor(year), y = prev, fill = Site)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Prev for Different Sites by Year", x = "Year", y = "Prev") +
+  theme_minimal()
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# plot density for different sites separately for different years
+ggplot(g_data, aes(x = factor(year), y = density, fill = Site)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Density for Different Sites by Year", x = "Year", y = "Prev") +
+  theme_minimal()
+```
+
+\newpage
+
+## b.
+
+I fitted the GLM model with family set to Poisson, as the response variable contains count data. To check for overdispersion, I calculated the dispersion ratio (residual deviance divided by degrees of freedom), which is 0.9006, slightly less than 1. This indicates no sign of overdispersion.
+
+```{r}
+g_data$centered_year <- g_data$year - mean(g_data$year) 
+glm_gopher_poisson <- glm(shells ~ centered_year + prev + offset(log(Area)), 
+                     data = g_data, 
+                     family = poisson)
+summary(glm_gopher_poisson)
+```
+
+```{r}
+# calculate dispersion rate
+residual_deviance <- deviance(glm_gopher_poisson)
+df_residual <- df.residual(glm_gopher_poisson)
+dispersion_ratio <- residual_deviance / df_residual
+dispersion_ratio
+```
+
+\newpage
+
+## c.
+
+Fit the same model with the formula interface of `bbmle`.
+
+```{r}
+model_1 <- mle2(
+  shells ~ dpois(lambda = exp(beta0 + beta_year * centered_year + beta_prev * prev + log(Area))),
+  start = list(beta0 = 0, beta_year = 0, beta_prev = 0),
+  data = g_data
+)
+summary(model_1)
+```
+
+## d.
+
+Write a negative log-likelihood function and use `bbmle` to fit the GLM.
+
+```{r}
+nll_poisson <- function(beta0, beta_year, beta_prev) {
+  lambda <- exp(beta0 + beta_year * g_data$centered_year + beta_prev * g_data$prev + log(g_data$Area))
+  -sum(dpois(g_data$shells, lambda, log = TRUE))  
+}
+
+model_2 <- mle2(nll_poisson, start = list(beta0 = 0, beta_year = 0, beta_prev = 0))
+
+summary(model_2)
+```
+
+\newpage
+
+## e.
+
+The estimate of the intercept for the GLM model was different than other two models in the first place. The result become nearly identical after I centering the year predictor for glm model. The following results showed the parameter estimates from all three models are almost identical. The coefficients, their standard errors, z-values, and p-values are very close across the methods. This consistency suggests that all the methods are performing well and producing nearly the same results, as expected.
+
+```{r}
+summary(glm_gopher_poisson)
+summary(model_1)
+summary(model_2)
+
+```
+
+\newpage
+
+## f.
+
+From the following results we can tell that both Wald confidence intervals and profile likelihood confidence intervals have quite similar range. However, the profile likelihood confidence intervals are a bit more conservative which are slightly wider compare to Wald confidence intervals.
+
+```{r}
+#|warning: false
+
+# Wald confidence intervals for GLM model
+cat("\n### Wald Confidence Intervals for GLM Model\n")
+wald_conf <- confint.default(glm_gopher_poisson)
+wald_conf
+
+# Wald confidence intervals for mle2 model_1
+cat("\n### Wald Confidence Intervals for mle2 Model_1\n")
+confint(model_1, method = "quad")
+
+# Wald confidence intervals for mle2 model_2
+cat("\n### Wald Confidence Intervals for mle2 Model_2\n")
+confint(model_2, method = "quad")
+
+```
+
+```{r}
+#|warning: false 
+
+# Profile likelihood confidence intervals for GLM model
+cat("\n### Profile Likelihood Confidence Intervals for GLM Model\n")
+confint(glm_gopher_poisson)
+
+# profile likelihood for mle2 model_1
+cat("\n### Profile Likelihood Confidence Intervals for mle2 Model_1\n")
+confint(model_1)
+# profile likelihood for mle2 model_2
+cat("\n### Profile Likelihood Confidence Intervals for mle2 Model_2\n")
+confint(model_2)
+```
+
+\newpage
+
+## Question 3:
+
+## a.
+
+I plotted three graphs: HG vs. EH, HG vs. NV, and HG vs. PI.
+
+The HG vs. EH graph shows that when EH is low, HG = 1, but as EH increases, HG shifts to 0. This suggests that low endometrium height is strongly predictive of hight-grade endometrial cancer.
+
+In the HG vs. NV graph, both the response (HG) and the predictor (NV) are binary. The graph indicates that when NV = 0, both low-grade (HG=0) and high-grade (HG=1) cancer are observed, with a slightly higher proportion with HG = 0. However, when NV = 1, HG is consistently 1, suggesting that the presence of neovascularization is more likely to be a sign of high-grade endometrial cancer.
+
+The HG vs. PI graph shows a slight positive correlation between PI and HG. Lower values of PI correspond to HG = 0, and as PI increases, the probability of HG = 1 increases. In the other words, the pulsatility index have a weak positive relationship with high-grade endometrial cancer.
+
+```{r}
+data("endometrial")
+str(endometrial)
+summary(endometrial)
+```
+
+\newpage
+
+## b.
+
+Since the response variable (HG) is binary, I chose logistic regression for building the model.
+
+```{r}
+# fit regular glm model
+cat("\n### Summary of the regular glm model for endometrial data\n")
+glm_endom <- glm(HG ~ NV + PI + EH, data = endometrial, family = binomial())
+summary(glm_endom)
+```
+
+```{r}
+#| warning: false
+# fit bayesglm model
+cat("\n### Summary of the bayseglm model for endometrial data\n")
+bayesglm_endom <- bayesglm(HG ~ NV + PI + EH, data = endometrial, family = binomial())
+summary(bayesglm_endom)
+
+```
+
+```{r}
+# fit brglmFit model
+cat("\n### Summary of the brglm model for endometrial data\n")
+brglm_endom <- glm(HG ~ NV + PI + EH, data = endometrial, family = binomial(), method = "brglmFit")
+summary(brglm_endom)
+
+```
+
+\newpage
+
+## (1). comparison of estimates
+
+The estimates for NV: In the regular GLM model, the estimate for NV is unrealistically high with a large standard error, most likely due to a separation issue (when NV = 1, HG = 1 perfectly without any overlap). In contrast, both the Bayesian and `brglmFit` models provide more reasonable estimates for NV.
+
+The estimates for PI: The estimates for PI are quite similar across all three models. However, none of these models show statistical significance for this estimate.
+
+The estimates for EH: The estimates for EH across all models are consistently negative, and all three models suggest that lower endometrial height is significantly associated with high-grade cancer.
+
+```{r}
+coef(glm_endom)
+coef(bayesglm_endom)
+coef(brglm_endom) 
+
+```
+
+\newpage
+
+## (2). comparison of Wald and likelihood profile confidence intervals
+
+I can not get the profile likelihood confidence interval for model bayesglm_endom, the error message was "profiling found a better solution", the issue might related to convergence caused by the defult priors of the bayesian models.
+
+when calculating profile likelihood confidence interval for model glm_endom, I got warning: "glm.fit: fitted probabilities numerically 0 or 1 occurred.", indicating perfect separation issue in glm model.
+
+The following table shows the confidence intervals across different models using both Wald and profile likelihood methods.
+
+**EH:**
+
+The confidence intervals for EH estimates are pretty similar, but the glm model has a wider interval in general with both the Wald and profile likelihood methods.
+
+The bayesGLM model shows the smallest interval in the Wald method.
+
+**NV:**
+
+The glm model shows unrealistically large intervals for NV in both methods, indicating an unreliable model fit, most likely caused by the perfect separation problem.
+
+The brglm model and bayesGLM model showed similar intervals between Wald and profile likelihood methods, confirming their ability to handle separation.
+
+**PI:**
+
+For PI, the glm model with the Wald method shows a much wider interval compared to the other models.
+
+The brglm model and bayesGLM model have nearly identical intervals for both Wald and profile likelihood methods, reinforcing their robustness for this predictor.
+
+```{r}
+#| warning: false
+#| message: false
+
+# Wald confidence intervals (use stats:::confint.default for Wald CIs)
+wald_ci_glm <- confint.default(glm_endom)
+wald_ci_bayesglm <- confint.default(bayesglm_endom)
+wald_ci_brglm <- confint.default(brglm_endom) 
+
+# Profile likelihood confidence intervals
+profile_ci_glm <- confint(glm_endom)
+profile_ci_brglm <- confint(brglm_endom) 
+
+```
+
+```{r}
+#|echo: false
+#|mmessage: false
+profile_ci_bayesglm <- confint(bayesglm_endom)
+
+```
+
+```{r}
+# Convert the results of confidence intervals to data frames and add predictors column
+wald_ci_glm_df <- as.data.frame(wald_ci_glm)
+wald_ci_glm_df$model <- "GLM"
+wald_ci_glm_df$type <- "Wald"
+wald_ci_glm_df$predictor <- rownames(wald_ci_glm_df)
+
+wald_ci_bayesglm_df <- as.data.frame(wald_ci_bayesglm)
+wald_ci_bayesglm_df$model <- "BayesGLM"
+wald_ci_bayesglm_df$type <- "Wald"
+wald_ci_bayesglm_df$predictor <- rownames(wald_ci_bayesglm_df)
+
+wald_ci_brglm_df <- as.data.frame(wald_ci_brglm)
+wald_ci_brglm_df$model <- "brglm"
+wald_ci_brglm_df$type <- "Wald"
+wald_ci_brglm_df$predictor <- rownames(wald_ci_brglm_df)
+
+profile_ci_glm_df <- as.data.frame(profile_ci_glm)
+profile_ci_glm_df$model <- "GLM"
+profile_ci_glm_df$type <- "Profile Likelihood"
+profile_ci_glm_df$predictor <- rownames(profile_ci_glm_df)
+
+profile_ci_brglm_df <- as.data.frame(profile_ci_brglm)
+profile_ci_brglm_df$model <- "brglm"
+profile_ci_brglm_df$type <- "Profile Likelihood"
+profile_ci_brglm_df$predictor <- rownames(profile_ci_brglm_df)
+
+# Combine all data frames
+ci_combined <- rbind(wald_ci_glm_df, wald_ci_bayesglm_df, wald_ci_brglm_df, profile_ci_glm_df, profile_ci_brglm_df)
+
+ci_combined <- ci_combined[, c("predictor", "2.5 %", "97.5 %", "model", "type")]
+
+ci_combined$range <- ci_combined$`97.5 %` - ci_combined$`2.5 %`
+
+ci_combined <- ci_combined[, c("predictor", "2.5 %", "97.5 %", "range", "model", "type")]
+
+ci_combined_sorted <- ci_combined[ci_combined$predictor != "(Intercept)", ]  # drop rows with "(Intercept)"
+ci_combined_sorted <- ci_combined_sorted[order(ci_combined_sorted$predictor), ]  # sort by predictor
+ci_combined_sorted
+```
+
+\newpage
+
+## (3). comparison of Wald and likelihood ratio-test p-values
+
+The p-value calculated from Wald and likelihood ratio tests are very different. The following table summarizes the p-values in all models from both tests.
+
+NV: the LRT method consistently shows significance across all models, but the Wald test shows significance only in the `bayesglm` model and almost in the `brglm` model.
+
+PI: both Wald nor LRT tests did not show significant of it in any of the models. However, the magnitude of p_values are very different.
+
+EH: this predictor is indicated highly significant by both Wald and LRT tests across all models.
+
+( problem: I am having difficulty to understand the differences of p-values calculated by Wald and LRT tests.)
+
+```{r}
+# define a function to extract Wald and LRT p-values
+extract_p_values <- function(model, model_name) {
+ 
+  model_summary <- summary(model)
+  wald_p_values <- coef(model_summary)[, "Pr(>|z|)"]
+ 
+  drop1_result <- drop1(model, test = "LRT")
+  lrt_p_values <- drop1_result[-1, "Pr(>Chi)"]  # Remove the "<none>" row
+
+  predictors <- rownames(coef(model_summary))
+  predictors_no_intercept <- predictors[predictors != "(Intercept)"]
+  
+  names(lrt_p_values) <- predictors_no_intercept
+  
+  results_table <- data.frame(
+    Predictor = predictors_no_intercept,  # exclude intercept
+    Wald_p_value = wald_p_values[predictors_no_intercept], 
+    LRT_p_value = lrt_p_values,  
+    Model = rep(model_name, length(predictors_no_intercept))  
+  )
+  
+  return(results_table)
+}
+
+
+# Apply the function to each model
+results_glm <- extract_p_values(glm_endom, "glm_endom")
+results_bayesglm <- extract_p_values(bayesglm_endom, "bayesglm_endom")
+results_brlgm <- extract_p_values(brglm_endom, "brglm_endom")
+
+pValue_table <- rbind(results_glm, results_bayesglm, results_brlgm)
+
+pValue_table$Wald_p_value <- round(pValue_table$Wald_p_value, 5)
+pValue_table$LRT_p_value <- round(pValue_table$LRT_p_value, 5)
+
+pValue_table
+
+```
+
+\newpage
+
+## Question 4:
+
+## a.
+
+fit a negative binomial model
+
+```{r}
+data("bioChemists", package = "pscl")
+?bioChemists
+
+nb_model <- glm.nb(art ~ ., data = bioChemists)
+summary(nb_model)
+```
+
+\newpage
+
+## b.
+
+Simulate 1000 new responses
+
+```{r}
+set.seed(101)  
+sim_vals <- simulate(nb_model, nsim = 1000)
+```
+
+## c.
+
+Compute the total numbers of zero observations for each simulation
+
+```{r}
+zero_counts <- colSums(sim_vals == 0)
+#zero_counts
+```
+
+## d.
+
+Histogram of the distribution of simulated zeros
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+hist(zero_counts, main = "Simulated Zero Counts", xlab = "Number of Zeros", breaks = 30, col = "lightblue")
+# overlay a vertical line 
+observed_zeros <- sum(bioChemists$art == 0)
+abline(v = observed_zeros, col = "red", lwd = 2)
+
+```
+
+## e.
+
+Compute p-value, the simulated zero counts that greater than or equal to the observed zeros
+
+```{r}
+
+p_value <- mean(zero_counts >= observed_zeros)
+cat("Simulated p-value:", p_value, "\n")
+
+```
+
+\newpage
+
+## f.
+
+The simulated zero counts seem to follow the characteristics of the negative binomial model, with the number of zeros likely to be very close to the center of the distribution. It represents a 58.2% (p-value = 0.582) chance that the simulated data have more or equal zero observations compared to the original data. This leads to the conclusion that zero inflation is very unlikely because the data don't show a high frequency of zeros. The DHARMa test doesn't show evidence of zero-inflation due to its significant p-value of 0.856. The results of the p-values suggest that the number of zeros practically supports behavior similar to a negative binomial distribution. In addition, the ratio of observed to simulated zeros shows a very close relationship between the predicted model and the original data (Ratio = 0.98847). Therefore, both the original (observed) data and the fitted model present characteristics of a negative binomial model and don't show evidence of zero-inflation. Thus, the number of observed zeros aligns well with the simulated model.
+
+The results of DHARMa::testZeroInflation()
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+dharma_res <- simulateResiduals(fittedModel = nb_model)
+zi_test <- testZeroInflation(dharma_res)
+
+zi_test
+```

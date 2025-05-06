@@ -1,0 +1,440 @@
+---
+title: "Star Dataset Analysis Using GLMM"
+format: 
+  pdf:
+    code-line-numbers: true
+editor: visual
+execute: 
+  message: false
+  warning: false
+header-includes:
+  \usepackage{fvextra}
+  \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
+---
+
+## 
+
+```{r}
+# load library
+library(Ecdat)
+library(tidyr)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(dplyr)
+library(lme4)
+library(performance)
+library(DHARMa)
+library(glmmTMB)
+library(brms)
+library(broom.mixed)
+library(dotwhisker)
+library(effects)
+```
+
+```{r}
+data("Star")
+```
+
+## Introduction
+
+The original researchers aimed to study how reducing class sizes in early elementary grades (K-3) affects student achievement and development. They compared student performance in small, regular, and aide-supported classrooms to see if having fewer students per teacher (13-17 to 1) improves learning outcomes, especially over several years. The study also looked at whether special teacher training for smaller classes or having teacher aides could further enhance performance. Additionally, they examined the effects across different grade levels, socio-economic backgrounds, teaching methods, and the long-term results of these educational changes.
+
+For their analysis, the researchers mainly used ANOVA methods suited for complex setups. They looked at data from different grades at one point in time and also tracked data over multiple years using repeated-measures ANOVA to handle related data over time. They calculated the changes in performance between grades and combined class-level data to make the analysis easier and to identify patterns. Moreover, they used a general linear model for designs that weren’t perfectly balanced, utilizing MULTIVARIANCE software. They applied multivariate statistics like Wilks' Lambda and used "protected" testing to ensure that follow-up tests were only done after significant overall results. This approach allowed them to explore main effects, interactions, and the impact of various demographic and educational factors within a strong statistical framework.
+
+In this analysis, I will use Generalized Linear Mixed Models (GLMM) from three different R packages to model `tmathssk` (the total math scaled score) as the response variable. I will include several fixed effects: `classk` (type of class), which has three categories (regular, small class, and regular with an aide) to examine whether being in a small class is associated with higher math scores compared to a regular class. Additionally, I will incorporate `totexpk` (total years of teaching experience) to determine if increased teacher experience improves student math scores, `sex` (boy/girl) to identify any gender differences in math performance, `freelunk` (eligibility for free lunch) to assess the impact of students' socio-economic backgrounds on their math scores, and `race` (White/Black/Other) to understand how different demographic groups perform in math. The random effects will include `schidkn` (school identifier) to account for each student's school. I assume that the distribution of `tmathssk`, given the random effects, is normal.
+
+## Exploratory Data Analysis
+
+The data set called Star, is from Ecdat package, contains 5748 observations and 8 variables which are four numeric and four categorical with no missing values.
+
+### a. Response Variable
+
+The density plot suggests that the distribution of tmathssk is close to a bell-shaped but slightly skewed. The boxplot reveals outliers on both the lower and upper ends.
+
+```{r}
+#| eval: false
+head(Star)
+str(Star)
+summary(Star)
+colSums(is.na(Star))
+```
+
+```{r}
+# plot the distribution of tmathssk
+mean_tmathssk <- mean(Star$tmathssk, na.rm = TRUE)
+sd_tmathssk <- sd(Star$tmathssk, na.rm = TRUE)
+
+ggplot(Star, aes(x = tmathssk)) +
+  geom_density(fill = "blue", alpha = 0.3) +
+  stat_function(fun = dnorm, 
+                args = list(mean = mean_tmathssk, sd = sd_tmathssk), 
+                geom = "line", 
+                linetype = "dashed", 
+                color = "red") +
+  labs(title = "Density Plot of Math Scaled Score (tmathssk)",
+       x = "Math Scaled Score",
+       y = "Density")
+```
+
+```{r}
+# boxplot of tmathssk
+ggplot(Star, aes(y=tmathssk)) +
+  geom_boxplot(fill = "gray") +
+  labs(title = "Boxplot of Math Scaled Score (tmathssk)",
+       y = "Math Scaled Score") +
+  theme_minimal()
+```
+
+```{r}
+#| eval: false
+# check outliers in tmathssk
+out_vals <- boxplot(Star$tmathssk, plot = FALSE)$out
+response_outliers <- Star[Star$tmathssk %in% out_vals, ]
+response_outliers
+
+```
+
+### b. Categorical Predictors
+
+There are four categorical predictors. The bar plot for `classk` (class type) shows that regular classes are slightly more common, while small classes are less frequent than the other two types. Although class type is somewhat balanced, it is not perfectly so. The bar plot for sex indicates a roughly equal number of girls and boys, suggesting near-balanced categories. Similarly, the bar plot for `freelunk` displays relatively even groups. However, the race category is heavily skewed toward one group (white), with the "other" category being much smaller.
+
+```{r}
+# bar plot for categorical variables
+plot_classk <- ggplot(Star, aes(x = classk)) +
+  geom_bar(fill = "lightsteelblue3") + 
+  labs(title = "Frequency of Class Types",
+       x = "Class Type",
+       y = "Frequency")
+
+plot_sex <- ggplot(Star, aes(x = sex)) +
+  geom_bar(fill = "cadetblue") +
+  labs(title = "Frequency of Sex",
+       x = "Sex",
+       y = "Frequency")
+
+plot_freelunk <- ggplot(Star, aes(x = freelunk)) +
+  geom_bar(fill = "steelblue2") +
+  labs(title = "Frequency of Free Lunch Qualification",
+       x = "Free Lunch Qualification",
+       y = "Frequency")
+
+plot_race <- ggplot(Star, aes(x = race)) +
+  geom_bar(fill = "rosybrown3") +
+  labs(title = "Frequency of Different Racial Groups",
+       x = "Race",
+       y = "Frequency")
+
+
+grid.arrange(plot_classk, plot_sex, plot_freelunk, plot_race, nrow = 2, ncol = 2)
+```
+
+### c. Continuous Predictors
+
+There is only one continuous predictor, teaching experience (`totexpk`). The boxplot indicates that most teachers cluster around 5 to 13 years of experience, with a small number having more experience (up to 27 years) than the majority. The density plot shows that the distribution of `totexpk` is not perfectly symmetrical and is slightly right-skewed, featuring a right tail that indicates fewer teachers with very high levels of experience.
+
+```{r}
+# plot the distribution of totexpk
+mean_totexpk <- mean(Star$totexpk, na.rm = TRUE)
+sd_totexpk <- sd(Star$totexpk, na.rm = TRUE)
+
+ggplot(Star, aes(x = totexpk)) +
+  geom_density(fill = "blue", alpha = 0.3) +
+  stat_function(fun = dnorm, 
+                args = list(mean = mean_totexpk, sd = sd_totexpk), 
+                geom = "line", 
+                linetype = "dashed", 
+                color = "red") +
+  labs(title = "Density Plot of Teaching Experience (totexpk)",
+       x = "Teaching Years",
+       y = "Density")
+```
+
+```{r}
+# boxplot of totexpk
+ggplot(Star, aes(y=totexpk)) +
+  geom_boxplot(fill = "grey") +
+  labs(title = "Boxplot of Teaching Experience (totexpk)",
+       y = "Teaching Years") +
+  theme_minimal()
+```
+
+```{r}
+#| eval: false
+
+# check outliers in teaching experience (totexpk)
+out_vals_totexpk <- boxplot(Star$totexpk, plot = FALSE)$out
+totexpk_outliers <- Star[Star$totexpk %in% out_vals_totexpk, ]
+totexpk_outliers
+```
+
+### d. Grouping Variable
+
+The grouping variable `schidkn` identifies schools and ranges numerically from 1 to 80, representing different school IDs. The dataset includes information from a total of 80 schools, providing a suitable number of groups for mixed model analysis.
+
+The histogram showing the distribution of students per school highlights the differences in student numbers across all schools. Some schools have fewer than 40 students, while others have around 120 students or more. This variation in school size and class types can impact the stability of random effects estimates in the model. Schools with more students contribute more to the estimation of random effects, whereas schools with fewer students offer less information.
+
+```{r}
+counts <- Star %>% 
+  group_by(schidkn) %>% 
+  summarize(count = n())
+
+ggplot(counts, aes(x = count)) +
+  geom_histogram(binwidth = 5, fill = "#69b3a2", color = "white") +
+  labs(title = "Distribution of Students per School",
+       x = "Number of Students",
+       y = "Students number") +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+ggplot(counts, aes(y = count)) +
+  geom_boxplot(fill = "#69b3a2") +
+  labs(title = "Boxplot of School Sizes",
+       y = "Number of Students per School",
+       x = "") +
+  theme_minimal() 
+
+```
+
+```{r}
+counts_sorted <- counts %>% arrange(count)
+
+ggplot(counts_sorted, aes(x = factor(schidkn), y = count)) +
+  geom_col(fill = "#69b3a2") +
+  labs(title = "Number of Students by School",
+       x = "School",
+       y = "Number of Students") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+```{r}
+counts_class <- Star %>%
+  group_by(schidkn, classk) %>%
+  summarize(count = n(), .groups = "drop")
+
+counts_class_mean <- counts_class %>%
+  group_by(classk) %>%
+  summarize(mean_count = mean(count))
+
+counts_prop <- counts_class %>%
+  group_by(schidkn) %>%
+  mutate(prop = count / sum(count))
+
+ggplot(counts_prop, aes(x = factor(schidkn), y = count, fill = classk)) +
+  geom_col() +
+  facet_wrap(~ classk) +  
+  scale_fill_manual(values = c("regular" = "#69b3a2",
+                               "small.class" = "orange3",
+                               "regular.with.aide" = "green4")) +
+  labs(title = "Number of Students by School for Each Class Type",
+       x = "Schools",
+       y = "Number of Students") +
+  theme_minimal(base_size = 14) +
+  theme(axis.text.x = element_blank()) +
+  geom_hline(data = counts_class_mean, 
+             aes(yintercept = mean_count),
+             linetype = "dashed", color = "black")
+
+```
+
+## Methods:
+
+### a. Packge lme4
+
+First, I built a full model (`model_full`) using lmer function from lme4 package with `tmathssk` as the response variable. The fixed effects included `classk` (a categorical variable with three levels), `totexpk` (years of teaching experience), `sex` (male/female), `freelunk` (eligibility for free lunch), and `race` (White, Black, Other). I also included a random effect for `schidkn` (school identifier) and random slops for all fix-effect predictiors. However, the full model resulted in a singular fit because the random-effects structure was too complex. By gradually simplifying the random slope terms, I developed a reduced model (`model_reduced`) that includes random intercepts and random slopes only for `classk` by school.
+
+```{r}
+# scale the continous predictor totexpk before fitting the models
+Star$totexpk_scaled <- as.numeric(scale(Star$totexpk))
+
+```
+
+```{r}
+# maximal model
+model_full <- lmer(
+  tmathssk ~ classk + totexpk_scaled + sex + freelunk + race +
+  (1 + classk + totexpk + sex + freelunk + race | schidkn),
+  data = Star
+)
+
+```
+
+```{r}
+# drooping terms to solve the singular fit issue
+model_reduced <- lmer(
+  tmathssk ~ classk + totexpk_scaled + sex + freelunk + race +
+  (1 + classk | schidkn),
+  data = Star
+)
+```
+
+The diagnostic plot from `check_model()` for the reduced model shows that the predicted and actual distributions match closely. The residuals are mostly centered around zero and spread out evenly, without any clear trends or patterns. The predictors have low Variance Inflation Factors (VIFs), all below 5. The Q-Q plot of residuals and related tests indicate that the residuals are generally normal, with only minor deviations. For the random effects (intercepts and slopes), the Q-Q plot shows some differences from a straight line. Additionally, the plot of influential observations (leverage) reveals that a group of points falls outside or on the edge of the expected range. This means that these specific observations have a disproportionate impact on the model.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+check_model(model_reduced)
+```
+
+The QQ plot from DHARMa revealed significant deviations, indicating that some residuals do not fit the model perfectly. The dispersion test was not significant, but the outlier test was significant, highlighting the presence of extreme residuals. In the Residual vs. Predicted plot, slight patterns suggested that the model might be missing some relationships, and a few outliers had a strong influence on the model.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+dharma_model_reduced <- simulateResiduals(fittedModel = model_reduced)
+plot(dharma_model_reduced)
+```
+
+The reduced model showed significant deviations in the DHARMa plot. To improve the model fit, I performed several tests. First, I checked for a nonlinear relationship between `totexpk` and the response variable `tmathssk` by adding a quadratic term or a spline to `totexpk`, but this did not enhance the model fit. Next, I tested some reasonable interactions, such as `classk * totexpk` and `classk * sex`, but these also did not improve the model fit. The model fit got better after I removed the random slope and applied a log transformation to the response variable.
+
+In the DHARMa plot, the adjusted model showed a slight improvement in fitting the data and handled outliers better. The residual patterns became less extreme and were more closely aligned with the diagonal line than before. Although not perfect, this is a clear improvement.
+
+Further examining the outliers might reduce the deviation, but since I do not have enough information or the necessary expertise to handle them, and I do not want to simply remove or adjust the outliers because this could bias the results, I decided to keep the outliers as they are for this analysis.
+
+```{r}
+model_adjusted <- lmer(
+  log(tmathssk) ~ classk + totexpk_scaled + sex + freelunk + race +
+  (1 | schidkn),
+  data = Star
+)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+dharma_model_adjusted <- simulateResiduals(fittedModel = model_adjusted)
+plot(dharma_model_adjusted)
+
+#testUniformity(dharma_model_test)
+#testDispersion(dharma_model_test)
+#testOutliers(dharma_model_test)
+#testQuantiles(dharma_model_test)
+#testZeroInflation(dharma_model_test)
+```
+
+After applying the log transformation, the leverage plot indicates that most points lie within the recommended bounds. The residuals have smaller deviations, and although the random effects quantile plot isn’t perfectly straight, the model better meets most assumptions, including linearity, normality, and equal variance compared to the reduced model.
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+check_model(model_adjusted)
+
+```
+
+```{r}
+summary(model_adjusted)
+```
+
+### b. Packge glmmTMB
+
+The second package I used is **glmmTMB**. It is specifically designed for fitting generalized linear mixed models, offers various link functions to support a wide range of distributions, and uses a formula syntax similar to `lme4::lmer`.
+
+```{r}
+model_adjusted_tmb <- glmmTMB(
+  log(tmathssk) ~ classk + totexpk_scaled + sex + freelunk + race +
+    (1 | schidkn),
+  data = Star,
+  family = gaussian()
+)
+```
+
+```{r}
+summary(model_adjusted_tmb)
+```
+
+### c. Package brms
+
+The third package I chose is **brms**. It also uses a formula syntax similar to `lme4`. I didn't specify any priors in brms; instead, it assigns weakly informative default priors, including flat priors for fixed effects and weakly informative half-Student-t priors for random effects. These default priors allow the data to primarily influence the results while preventing the model from assigning equal likelihood to extremely large parameter values.
+
+```{r}
+#| warning: false
+#| message: false
+model_adjusted_bayes <- brm(
+  formula = log(tmathssk) ~ classk + totexpk_scaled + sex + freelunk + race + (1 | schidkn),
+  data = Star,
+  family = gaussian()
+)
+
+```
+
+```{r}
+prior_summary(model_adjusted_bayes)
+```
+
+```{r}
+summary(model_adjusted_bayes)
+```
+
+### d. Comparison
+
+All three models are fitted using the formula `log(tmathssk) ∼ classk + totexpk_scaled + sex + freelunk + race + (1 | schidkn)`. The first model, **lmer** from the lme4 package, uses Restricted Maximum Likelihood (REML) to estimate fixed effects and random intercepts, accounting for variation across schools with the random effect `(1 | schidkn)`. The second model, **glmmTMB**, also employs maximum likelihood estimation but offers more flexible and efficient optimization through TMB. The third model, **brms**, takes a Bayesian approach using Stan’s NUTS sampler to estimate the posterior distributions of parameters, with weakly informative default priors for fixed and random effects. All three methods produce very similar point estimates for the fixed effects, such as the intercept (\~6.21), small.class (0.018–0.02), totexpk_scaled (0.0045–0.005), sexboy (-0.014), and freelunkyes (-0.04). The lmer and glmmTMB models provide frequentist inference, including standard errors, t-values or z-values, and p-values, with effects like classkSmall.class, sexboy, totexpk_scaled, freelunkyes, and raceblack showing significant p-values. In contrast, the brms model offers posterior means and 95% credible intervals, where intervals not overlapping zero indicate strong evidence of effects, which is true for classkSmall.class, freelunkyes, raceblack, sexboy, and totexpk_scaled. All three models estimate a school-level intercept variance around 0.0017–0.00175 with a standard deviation of approximately 0.0417–0.042 and a residual variance (sigma) of about 0.0069–0.0070 (\~0.083 for the SD). These estimates are consistent across methods, demonstrating that school-level variation and overall residual variation are stable.
+
+```{r}
+tidy_lmer <- tidy(model_adjusted, effects = "fixed", conf.int = TRUE) %>%
+  mutate(Model = "lmer")
+
+tidy_glmmTMB <- tidy(model_adjusted_tmb, effects = "fixed", conf.int = TRUE) %>%
+  mutate(Model = "glmmTMB")
+
+tidy_brm <- tidy(model_adjusted_bayes, effects = "fixed", conf.int = TRUE) %>%
+  mutate(Model = "brms")
+
+combined <- bind_rows(tidy_lmer, tidy_glmmTMB, tidy_brm)
+
+comparison_table <- combined %>%
+  select(Model, term, estimate) %>% 
+  pivot_wider(
+    names_from = Model,
+    values_from = estimate
+  )
+
+comparison_table
+```
+
+## Conlusion
+
+The following graphs show that using three different modeling methods: lme4’s lmer, glmmTMB, and brms, yields very similar conclusions about how the predictors affect log-transformed math scores. All three models provide nearly identical estimates for class type, teaching experience, sex, free lunch eligibility, and race, regardless of whether a frequentist or Bayesian approach is used. Specifically, small classes are linked to slightly higher math scores, more teaching experience leads to modest score increases, boys have slightly lower scores than girls, students eligible for free lunch score lower, and Black students have notably lower scores compared to White students. The uncertainty estimates from the Bayesian and frequentist models overlap, indicating consistent precision and effect directions. Additionally, all models ran smoothly without major issues, and the results were stable across different methods.
+
+```{r}
+# coefficient plots:
+df_lmer <- tidy(model_adjusted, effects = "fixed")
+df_tmb <- tidy(model_adjusted_tmb, effects = "fixed")
+df_bayes <- tidy(model_adjusted_bayes, effects = "fixed")
+
+df_all <- bind_rows(
+  df_lmer  %>% mutate(model = "lmer"),
+  df_tmb   %>% mutate(model = "glmmTMB"),
+  df_bayes %>% mutate(model = "brms")
+)
+
+dwplot(df_all, dodge_size = 0.7) + 
+  theme_minimal() +
+  labs(title = "Coefficient Estimates from lmer, glmmTMB, and brms",
+       x = "Estimate",
+       y = "Parameter")
+
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# effects plots:
+eff_lmer <- allEffects(model_adjusted)
+plot(eff_lmer)
+```
+
+```{r}
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+eff_tmb <- allEffects(model_adjusted_tmb)  
+plot(eff_tmb)
+```

@@ -1,0 +1,409 @@
+---
+title: "Linear Mixed Models"
+format: 
+  pdf:
+    code-line-numbers: true
+---
+
+```{r}
+#| message: false
+#| warning: false
+library(mlmRev)
+library(ggplot2); theme_set(theme_bw())
+library(nlme)
+library(lme4)
+library(lmerTest)
+library(glmmTMB)
+library(purrr)
+library(broom.mixed)
+library(dplyr)
+library(pbkrtest)
+library(patchwork)
+library(performance)
+library(DHARMa)
+library(dotwhisker)
+```
+
+## Inspect the data
+
+```{r}
+gg0 <- ggplot(ScotsSec, aes(y = attain, colour = sex)) + stat_sum(alpha = 0.5) +
+  stat_summary(aes(group=interaction(sex, primary)), geom = "line", fun=mean)
+gg1 <- gg0 + aes(x=factor(social))
+gg2 <- gg0 + aes(x=verbal)
+gg1 + gg2
+
+
+```
+
+```{r}
+??ScotsSec
+head(ScotsSec)
+```
+
+```{r}
+str(ScotsSec)
+summary(ScotsSec)
+```
+
+## a. Fitting a linear mixed model
+
+Using `lmer` (from `lmerTest`, with the default `REML=TRUE`), fit a linear mixed model.
+
+There is a warning that the model has a singular fit which implies the model might be overfitting by the overly complex random effects structure. The estimated variance of `verbal` is nearly zero, it could be contributing to the singular fit issue.
+
+```{r}
+ScotsSec$social <- as.factor(ScotsSec$social)
+str(ScotsSec)
+```
+
+```{r}
+lmx_1 <- lmer(attain ~ 1 + social + sex + verbal + 
+                (1 + social + sex + verbal | primary),
+              data = ScotsSec)
+
+summary(lmx_1)
+```
+
+```{r}
+#help('isSingular')
+isSingular(lmx_1)
+```
+
+## b. Simplifying the Model
+
+Method 1: Remove the random-effects, `verbal`, that has the smallest estimated variance.
+
+```{r}
+model_simplified_1 <- lmer(
+  attain ~ 1 + social + sex + verbal + 
+    (1 + social + sex | primary), 
+  data = ScotsSec
+)
+
+# Summarize the simplified model
+summary(model_simplified_1)
+```
+
+```{r}
+# check for singularity
+isSingular(model_simplified_1, tol = 1e-4)
+
+```
+
+after simplify the model by removed the verbal random effect, still shows singular fit. I further simplified the model by removing additional random effects, `social`, with smallest variance.
+
+Finally, the singularity issue has been resolved after discarding random effects `verbal` and `social`.
+
+```{r}
+model_simplified_2 <- lmer(
+  attain ~ 1 + social + sex + verbal + 
+    (1 + sex | primary), 
+  data = ScotsSec
+)
+
+# Summarize the simplified model
+summary(model_simplified_2)
+```
+
+```{r}
+isSingular(model_simplified_2)
+```
+
+## c. Model diagnostics
+
+The `check_model()` function provides a series of diagnostic plots:
+
+-   **Posterior Predictive Check**: This plot shows some discrepancy between the distributions of observed data and predicted data, especially around the peaks. It implies that the model cannot fully capture the distribution of the observed data.
+
+-   **Linearity**: This graph shows clear patterns in the residuals across fitted values, indicating potential non-linear relationships that aren’t captured by the model.
+
+-   **Homogeneity of Variance**: This graph shows a clear fan pattern, suggesting heteroscedasticity. This might be caused by characteristics of the random effects in the mixed model.
+
+-   **Influential Observations**: Most points fall within the contour lines, and there are no severely influential points affecting the model.
+
+-   **Collinearity**: The VIF values of all predictors are low (\<5), suggesting no concerning multicollinearity.
+
+-   **Normality of Residuals**: The residuals show good alignment with the diagonal line, indicating a normal distribution.
+
+-   **Normality of Random Effects (primary)**: This is an additional diagnostic plot provided by the `check_model()` function for mixed models, compared to fixed-effects-only models. In this graph, both the intercept and `sexF` random effects show good alignment with the reference line.
+
+The **DHARMa** plots reveal some patterns in the residuals, indicating possible non-linear relationships. The KS test shows a significant deviation from normality, and the outlier test indicates the presence of significant outliers.
+
+Overall, there are issues such as heteroscedasticity and non-linearity, suggesting that the model could be further improved.
+
+Method 1: performance::check_model( )
+
+```{r}
+#| fig.width: 16
+#| fig.height: 9
+#| dpi: 600
+#| warning: false
+check_model(model_simplified_2)
+```
+
+Method 2: DHARMa diagnostics
+
+```{r}
+#| fig.width: 16
+#| fig.height: 9
+#| dpi: 600
+#| warning: false
+# Simulate residuals using DHARMa for fixed model
+simulation_fixed <- simulateResiduals(fittedModel = model_simplified_2, plot = FALSE)
+plot(simulation_fixed)
+```
+
+## d.
+
+Fitting the model using nlme::lme()
+
+```{r}
+model_nlme <- lme(
+  fixed = attain ~ 1 + social + sex + verbal,
+  random = ~ 1 + sex | primary,
+  data = ScotsSec,
+  method = "REML"
+)
+summary(model_nlme)
+```
+
+Fitting model using glmmTMB
+
+```{r}
+model_glmmTMB <- glmmTMB(
+  attain ~ 1 + social + sex + verbal +
+    (1 + sex | primary),
+  data = ScotsSec,
+  REML = TRUE
+)
+
+summary(model_glmmTMB)
+```
+
+## e. Model comparison
+
+From the comparison table below, we can see that the sigma (residual standard deviation), log-likelihood, AIC, and BIC are almost identical across the three models. This indicates that these three models, built using different R packages, fit the data similarly. The absence of `REMLcrit` and deviance values shows differences in how these models report certain metrics.
+
+```{r}
+mod_list <- list(
+  lmer_model = model_simplified_2,
+  nlme_model = model_nlme,
+  glmmTMB_model = model_glmmTMB
+)
+
+model_comparisons <- purrr::map_dfr(mod_list, broom.mixed::glance, .id = "model")
+tibble::as_tibble(model_comparisons)
+
+
+
+```
+
+## f. Fixed effects comparison
+
+The estimates for all fixed effects are identical across models.
+
+For standard errors, the value for `sexF` is very similar across models, while the standard errors for the other fixed effects are identical.
+
+For degrees of freedom, the `glmmTMB` model does not provide `df` values. The `df` values for `nlme_model` are consistently 3282, while those for `lmer_model` vary across terms.
+
+The p-values are mostly identical or practically identical across all models.
+
+In conclusion, the three models, built using different packages, produce nearly identical or very similar estimates, standard errors, and p-values for the fixed effects.
+
+```{r}
+fixed_effects <- purrr::map_dfr(mod_list,
+                         ~tidy(., effects = "fixed"),
+                         .id = "model") |> dplyr::arrange(term)
+
+print(fixed_effects)
+```
+
+## g. Fixed effects coefficient plot
+
+The coefficient plot below reveals that all three models generate similar estimates for the fixed effects, with no significant differences in the confidence intervals.
+
+```{r}
+
+# generate a coefficient plot of the fixed effects using dotwhisker::dwplot
+fixed_effects_plot <- dwplot(fixed_effects, effects = "fixed") +
+  facet_wrap(~term, scales = "free") +
+  theme_minimal() +
+  labs(title = "Coefficient Plot of Fixed Effects",
+       x = "Estimate",
+       y = "Term")
+
+fixed_effects_plot
+```
+
+## h.
+
+The estimates and standard errors from each method are practically identical, and the t-values are very similar across all methods.
+
+The p-values are also nearly identical; all significant effects remain significant, and `sexF` remains non-significant across all methods.
+
+(1). Using Satterthwaite method to get model summary
+
+```{r}
+satt_summary <- coef(summary(model_simplified_2, ddf = "Satterthwaite"))
+satt_summary
+```
+
+(2). Using Kenward-Roger method to get model summary
+
+```{r}
+kr_summary <- coef(summary(model_simplified_2, ddf = "Kenward-Roger"))
+kr_summary
+```
+
+(3). summary of nlme model
+
+```{r}
+nlme_model_summary <- summary(model_nlme)
+nlme_model_summary
+```
+
+## i.
+
+The graph shows a negative correlation between random intercepts and slopes, which means schools with higher overall attainment tend to have smaller or negative sex effects.
+
+```{r}
+random_effects <- ranef(model_simplified_2)$primary
+random_effects_df <- data.frame(
+  intercept = random_effects[,"(Intercept)"],
+  sex_slope = random_effects[,"sexF"]
+)
+
+
+ggplot(random_effects_df, aes(x = intercept, y = sex_slope)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = TRUE, color = "blue") +
+  labs(x = "Random Intercept",
+       y = "Random Slope (Sex Effect)",
+       title = "Random Effects: Sex Slope vs Intercept by School") +
+  theme_minimal()
+```
+
+```{r}
+#| fig.width: 16
+#| fig.height: 9
+#| dpi: 600
+
+# extract random effects using ranef()
+random_effects <- ranef(model_simplified_2, condVar = TRUE)
+
+primary_random_effects <- random_effects$primary
+
+intercepts <- primary_random_effects[ , "(Intercept)"]
+slopes <- primary_random_effects[ , "sexF"]
+
+cond_sd <- attr(random_effects$primary, "postVar")
+intercept_sd <- sqrt(cond_sd[1, 1, ])
+slope_sd <- sqrt(cond_sd[2, 2, ])
+
+# dataframe for plotting
+plot_data <- data.frame(
+  school = rownames(primary_random_effects),
+  intercept = intercepts,
+  slope = slopes,
+  intercept_sd = intercept_sd,
+  slope_sd = slope_sd
+)
+
+
+ggplot(plot_data, aes(x = intercept, y = slope)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = intercept - intercept_sd, 
+                     xmax = intercept + intercept_sd), height = 0) +
+  geom_errorbar(aes(ymin = slope - slope_sd, 
+                    ymax = slope + slope_sd), width = 0) +
+  labs(x = "Random Intercept (school level)", 
+       y = "Random Effect of SexF (deviation from population-level slope)",
+       title = "Random Effect of SexF vs Random Intercept by School") +
+  theme_minimal()
+```
+
+## j.
+
+Even though `social` has been converted to a factor with four levels before fitting the model, it still shouldn’t be used as a random-effects grouping variable.
+
+(1). `social` has only four levels, which is insufficient for reliable variance estimation in a random effects model.
+
+(2). Social class represents predefined, ordered categories rather than a randomly sampled unit. Treating an ordinal variable as a random effect would lose important information about its structure.
+
+(3). Social class is better modeled as an ordinal fixed effect to capture its ordered nature directly in the model.
+
+```{r}
+summary(ScotsSec$social)
+
+ggplot(ScotsSec, aes(x = social)) +
+  geom_bar(fill = "steelblue") +
+  theme_minimal() +
+  labs(title = "Distribution of Social Class",
+       x = "Social",
+       y = "Count of Students") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## k.
+
+Fixed effects represent the overall average effect of a predictor across all observations. For example, the fixed effect of `sex` tells us the average difference in attainment scores between male and female students across all schools.
+
+Random effects, on the other hand, model how a predictor's effect varies across different groups. For instance, the random effect of `sex` would tell us that the difference between genders might be larger in some schools and smaller in others.
+
+Without the fixed effect, there is no baseline reference. For example, we might know that the difference between male and female students is +5 points in some schools and -3 points in others. However, we wouldn’t know the overall average difference, or what these variations are centered around.
+
+## l.
+
+There were some convergence warnings indicating that the max\|grad\| values were slightly above the tolerance threshold of 0.002, which might affect the accuracy of the p-values. To address this issue, I scaled all predictors before fitting the models.
+
+Based on both the likelihood ratio test and parametric bootstrap results, we have strong evidence (p \< 0.01) that the full model (including both random intercept and random slope) significantly improves model fit.
+
+Additionally, the full model has a smaller AIC score, suggesting that it provides a better fit compared to the model with only a random intercept.
+
+```{r}
+
+data(ScotsSec)
+
+# Scale the predictors in the dataset
+ScotsSec_scaled <- ScotsSec
+ScotsSec_scaled$social <- scale(ScotsSec$social)
+ScotsSec_scaled$verbal <- scale(ScotsSec$verbal)
+ScotsSec_scaled$attain <- scale(ScotsSec$attain)  # scaling outcome can also help
+
+# Check the head of the scaled dataset
+head(ScotsSec_scaled)
+```
+
+```{r}
+# the full model with scaled predictors
+scaled_full_model <- lmer(attain ~ 1 + social + sex + verbal + (1 + sex | primary), 
+                         data = ScotsSec_scaled, 
+                         control = lmerControl(optimizer = "bobyqa",
+                                            optCtrl = list(maxfun = 2e5)))
+
+# the reduced model with scaled predictors
+scaled_reduced_model <- lmer(attain ~ 1 + social + sex + verbal + (1 | primary), 
+                           data = ScotsSec_scaled,
+                           control = lmerControl(optimizer = "bobyqa",
+                                              optCtrl = list(maxfun = 2e5)))
+
+
+set.seed(123)
+pb_test_scaled <- PBmodcomp(scaled_full_model, scaled_reduced_model, nsim = 1000)
+print(pb_test_scaled)
+
+summary(scaled_full_model)
+```
+
+```{r}
+
+# compare models using AIC
+cat("\
+AIC Comparison:\
+")
+cat("AIC for full model:", AIC(scaled_full_model), "\
+")
+cat("AIC for reduced model:", AIC(scaled_reduced_model), "\
+")
+```

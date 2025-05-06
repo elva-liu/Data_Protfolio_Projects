@@ -1,0 +1,351 @@
+```{r}
+
+```
+
+```{r}
+
+```
+
+---
+title: "Unsupervised and Semi-Supervised Clustering for Breast Cancer Diagnosis: Comparing GPCM and MFA Models"
+format: pdf
+editor: visual
+message: false
+worning: false
+---
+
+```{r}
+# load library
+library(mixture) # for finite mixtrue modeling
+library(pgmm)
+library(e1071)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false   
+
+# load data and assign clomun names
+df <- read.csv("wdbc.data", 
+                 header = FALSE, 
+                 stringsAsFactors = FALSE)
+df <- df[, 2:12]
+column_names <- c("Diagnosis", "radius", "texture", 
+                  "perimeter", "area", "smoothness", 
+                  "compactness", "concavity", "concave_points", 
+                  "symmetry", "fractal_dimension")
+colnames(df) <- column_names
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# convert target variable to factor
+df$Diagnosis <- as.factor(df$Diagnosis)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#| fig.width: 8
+#| fig.height: 6
+#| dpi: 300
+# pairs plot
+png("plot.png", width = 800, height = 600)
+p<-pairs(df[,-1],col=df[,1])
+dev.off()
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# scale data
+df_scaled<-scale(df[,-1])
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# k-mean initialization
+gpcm_clust_kmean = gpcm(df_scaled, G=1:2)
+gpcm_clust_kmean 
+summary(gpcm_clust_kmean)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+tab_gpcm_1<-table(df[,1], gpcm_clust_kmean$map)
+tab_gpcm_1
+classAgreement(tab_gpcm_1)
+1-classAgreement(tab_gpcm_1)$diag
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# 10 random start initialization
+gpcm_clust_random_10 = gpcm(df_scaled, G=1:2, start=10, atol=1e-2)
+gpcm_clust_random_10 
+summary(gpcm_clust_random_10)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+tab_gpcm_2<-table(df[, 1],gpcm_clust_random_10$map)
+tab_gpcm_2
+classAgreement(tab_gpcm_2)
+1-classAgreement(tab_gpcm_2)$diag
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# 20 random start initialization
+gpcm_clust_random_20 = gpcm(df_scaled, G=2:2, start=20, atol=1e-4)
+gpcm_clust_random_20 
+summary(gpcm_clust_random_20)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#Classification table
+
+tab_gpcm_3<-table(df[,1],gpcm_clust_random_20$map) 
+tab_gpcm_3
+classAgreement(tab_gpcm_3)
+1-classAgreement(tab_gpcm_3)$diag
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#k_mean semi-supervised, define the number of clusters
+clust_pgmm_1= pgmmEM(df_scaled, rG=2:2,rq=1:5,relax=TRUE)
+clust_pgmm_1
+summary(clust_pgmm_1)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#Classification table
+tab_MFA_1 <- table(df[,1],clust_pgmm_1$map)
+tab_MFA_1 <- tab_MFA_1[,c(2,1)]
+tab_MFA_1
+classAgreement(tab_MFA_1)
+1-classAgreement(tab_MFA_1)$diag
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# use 10 random starts for initialization 
+clust_pgmm_2 = pgmmEM(df_scaled, rG=2:2,rq=1:5,relax=TRUE,zstart=1,loop=10)
+clust_pgmm_2
+summary(clust_pgmm_2)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+tab_MFA_2 <- table(df[,1],clust_pgmm_2$map)
+tab_MFA_2
+classAgreement(tab_MFA_2)
+1-classAgreement(tab_MFA_2)$diag
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# use 20 random starts for initialization -- very slow
+clust_pgmm_3 = pgmmEM(df_scaled, rG=2:2,rq=1:5,relax=TRUE,zstart=1,loop=20)
+clust_pgmm_3
+summary(clust_pgmm_3)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+tab_MFA_3 <- table(df[,1],clust_pgmm_3$map)
+tab_MFA_3
+classAgreement(tab_MFA_3)
+1-classAgreement(tab_MFA_3)$diag
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# data plots
+#pairs plot
+pairs_plot<-ggpairs(df, 
+                    aes(colour=Diagnosis, alpha=0.4),
+                    upper=list(continuous = wrap("cor", size = 2))) 
+
+ggsave("pairs_plot.png", plot = pairs_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#parallel co-ordinates plot, scale
+parcoord_plot <- ggparcoord(df, columns=2:11, groupColumn="Diagnosis", scale="uniminmax") + 
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+ggsave("parcoord_plot.png", plot = parcoord_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#compare boxplots
+#radius
+a <- ggplot(df, aes("Boxplot for all", radius)) +
+            xlab("")  + geom_boxplot() +
+            scale_x_discrete(breaks=NULL) 
+b <- ggplot(df, aes(Diagnosis, radius)) + 
+            geom_boxplot() +  xlab("")
+combined_plot_1 <- grid.arrange(a, b, nrow=1, widths=c(1,2))
+ggsave("combined_plot_1.png", plot = combined_plot_1, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#compare boxplots
+#perimeter
+c <- ggplot(df, aes("Boxplot for all", perimeter)) +
+            xlab("")  + geom_boxplot() +
+            scale_x_discrete(breaks=NULL) 
+d <- ggplot(df, aes(Diagnosis, perimeter)) + 
+            geom_boxplot() +  xlab("")
+grid.arrange(c, d, nrow=1, widths=c(1,2))
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#compare boxplots
+#concavity
+a <- ggplot(df, aes("Boxplot for all", concavity)) +
+            xlab("")  + geom_boxplot() +
+            scale_x_discrete(breaks=NULL) 
+b <- ggplot(df, aes(Diagnosis, concavity)) + 
+            geom_boxplot() +  xlab("")
+combined_plot_2<-grid.arrange(a, b, nrow=1, widths=c(1,2))
+ggsave("combined_plot_2.png", plot = combined_plot_2, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+#compare boxplots
+#concave_points
+a <- ggplot(df, aes("Boxplot for all", concave_points)) +
+            xlab("")  + geom_boxplot() +
+            scale_x_discrete(breaks=NULL) 
+b <- ggplot(df, aes(Diagnosis, concave_points)) + 
+            geom_boxplot() +  xlab("")
+combined_plot_3<-grid.arrange(a, b, nrow=1, widths=c(1,2))
+ggsave("combined_plot_3.png", plot = combined_plot_3, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+
+a <- ggplot(df, aes(Diagnosis, radius)) + 
+            geom_boxplot() +  xlab("")
+b <- ggplot(df, aes(Diagnosis, area)) + 
+            geom_boxplot() +  xlab("")
+c <- ggplot(df, aes(Diagnosis, concave_points)) + 
+            geom_boxplot() +  xlab("")
+parcoord_plot <- ggparcoord(df, columns=2:11, groupColumn="Diagnosis", scale="uniminmax") + 
+  theme(axis.text.x = element_text(size = 8, angle = 45, hjust = 1))
+combined_plot_4<-grid.arrange(arrangeGrob(a, b, c, ncol=3, widths=c(1,1,1)), parcoord_plot, nrow=2)
+ggsave("combined_plot_4.png", plot = combined_plot_4, width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+# k-mean initialization
+gpcm_clust_kmean_unsupervise = gpcm(df_scaled, G=1:5)
+gpcm_clust_kmean_unsupervise
+summary(gpcm_clust_kmean_unsupervise)
+```
+
+```{r}
+#| echo: true      
+#| results: "hide" 
+#| warning: false   
+#| message: false 
+tab_gpcm_unsup<-table(df[,1], gpcm_clust_kmean_unsupervise$map)
+tab_gpcm_unsup
+classAgreement(tab_gpcm_unsup)
+
+```
